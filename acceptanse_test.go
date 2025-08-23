@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"fmt"
+	"log"
+	"os"
 	"testing"
 	"time"
 
@@ -12,6 +14,8 @@ import (
 func Test_Acceptance(t *testing.T) {
 	patent, cancel := context.WithCancel(context.Background())
 	defer cancel()
+
+	logger := log.New(os.Stdout, "", log.LstdFlags)
 
 	emailEnvelope := &pkg.Envelope{Id: 1, Interval: 5 * time.Second, Deadline: 3 * time.Second, Type: "email",
 		Invoke: func(ctx context.Context) error {
@@ -28,7 +32,12 @@ func Test_Acceptance(t *testing.T) {
 			fmt.Println("hook after email", item.Id, time.Now())
 			return pkg.ErrStopEnvelope
 		},
+		Stamps: []pkg.Stamp{
+			pkg.LoggingStamp(logger),
+			pkg.BeforeAfterStamp(pkg.WithHookTimeout),
+		},
 	}
+
 	envelops := map[string]*pkg.Envelope{
 		"Email": emailEnvelope,
 		"Metrics": {Id: 2, Interval: 3 * time.Second, Deadline: 1 * time.Second, Type: "metrics",
@@ -42,12 +51,15 @@ func Test_Acceptance(t *testing.T) {
 				return nil
 			}},
 	}
+
 	envelopeQueue := pkg.NewRateEnvelopeQueue(
 		pkg.WithLimitOption(3),
 		pkg.WithWaitingOption(true),
 		pkg.WithStopModeOption(pkg.Drain),
-		pkg.WithLimiterOption(nil),
-		pkg.WithWorkqueueConfigOption(nil),
+		//pkg.WithStamps(
+		//	pkg.LoggingStamp(logger),
+		//	pkg.BeforeAfterStamp(pkg.WithHookTimeout),
+		//),
 	)
 
 	envelopeQueue.Start(patent)
@@ -63,8 +75,10 @@ func Test_Acceptance(t *testing.T) {
 		pkg.WithLimitOption(3),
 		pkg.WithWaitingOption(true),
 		pkg.WithStopModeOption(pkg.Drain),
-		pkg.WithLimiterOption(nil),
-		pkg.WithWorkqueueConfigOption(nil),
+		pkg.WithStamps(
+			pkg.LoggingStamp(logger),
+			pkg.BeforeAfterStamp(pkg.WithHookTimeout),
+		),
 	)
 
 	envelopeQueue.Start(patent)

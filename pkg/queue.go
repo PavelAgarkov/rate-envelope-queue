@@ -3,7 +3,6 @@ package pkg
 import (
 	"context"
 	"errors"
-	"fmt"
 	"log"
 	"runtime/debug"
 	"sync"
@@ -13,34 +12,6 @@ import (
 	"golang.org/x/time/rate"
 	"k8s.io/client-go/util/workqueue"
 )
-
-type StopMode string
-
-const (
-	Drain StopMode = "drain"
-	Stop  StopMode = "stop"
-
-	service = "[rate-envelope-queue]"
-)
-
-var (
-	ErrStopEnvelope                        = errors.New(fmt.Sprintf("%s: stop envelope", service))
-	ErrEnvelopeInBlacklist                 = errors.New(fmt.Sprintf("%s: envelope is in blacklist", service))
-	ErrEnvelopeQueueIsNotRunning           = errors.New(fmt.Sprintf("%s: queue is not running", service))
-	ErrAdditionEnvelopeToQueueBadFields    = errors.New(fmt.Sprintf("%s: addition envelope to queue has bad fields", service))
-	ErrAdditionEnvelopeToQueueBadIntervals = errors.New(fmt.Sprintf("%s: addition envelope to queue has bad intervals", service))
-)
-
-type Envelope struct {
-	Id       uint64
-	Type     string
-	Interval time.Duration
-	Deadline time.Duration
-
-	BeforeHook func(ctx context.Context, item *Envelope) error
-	Invoke     func(ctx context.Context) error
-	AfterHook  func(ctx context.Context, item *Envelope) error
-}
 
 type RateEnvelopeQueue struct {
 	limit         int
@@ -56,41 +27,97 @@ type RateEnvelopeQueue struct {
 
 	blackListMu sync.RWMutex
 	blacklist   map[string]struct{}
+
+	queueStamps []Stamp // глобальные stamps очереди
 }
 
-func WithLimitOption(limit int) func(*RateEnvelopeQueue) {
-	return func(queue *RateEnvelopeQueue) {
-		queue.limit = limit
+func chain(base Invoker, stamps ...Stamp) Invoker {
+	w := base
+	for i := len(stamps) - 1; i >= 0; i-- {
+		w = stamps[i](w)
 	}
+	return w
 }
 
-func WithWaitingOption(waiting bool) func(*RateEnvelopeQueue) {
-	return func(queue *RateEnvelopeQueue) {
-		queue.waiting = waiting
+func (rateQueue *RateEnvelopeQueue) buildInvoker(e *Envelope) Invoker {
+	base := func(ctx context.Context, env *Envelope) error {
+		return env.Invoke(ctx)
 	}
+	// порядок: сначала глобальные, потом пер-задачные
+	inv := chain(base, append(rateQueue.queueStamps, e.Stamps...)...)
+	return inv
 }
 
-func WithStopModeOption(stopMode StopMode) func(*RateEnvelopeQueue) {
-	return func(queue *RateEnvelopeQueue) {
-		if stopMode != Drain && stopMode != Stop {
-			panic("invalid stop mode")
+func (rateQueue *RateEnvelopeQueue) worker(ctx context.Context) {
+	if rateQueue.waiting {
+		defer rateQueue.wg.Done()
+	}
+	for {
+		envelope, shutdown := rateQueue.queue.Get()
+		if shutdown {
+			log.Printf(service + ": worker is shutting down")
+			return
 		}
-		queue.stopMode = stopMode
-	}
-}
 
-func WithWorkqueueConfigOption(conf *workqueue.TypedRateLimitingQueueConfig[*Envelope]) func(*RateEnvelopeQueue) {
-	return func(queue *RateEnvelopeQueue) {
-		if conf != nil {
-			queue.workqueueConf = conf
+		if rateQueue.checkInBlacklist(envelope.Type) {
+			rateQueue.queue.Forget(envelope)
+			rateQueue.queue.Done(envelope)
+			continue
 		}
-	}
-}
 
-func WithLimiterOption(limiter workqueue.TypedRateLimiter[*Envelope]) func(*RateEnvelopeQueue) {
-	return func(queue *RateEnvelopeQueue) {
-		if limiter != nil {
-			queue.limiter = limiter
+		err := func(envelope *Envelope) error {
+			defer func() {
+				if r := recover(); r != nil {
+					rateQueue.queue.Forget(envelope)
+					rateQueue.queue.Done(envelope)
+					log.Printf(service+": panic recovered in item: %v\n%s", r, debug.Stack())
+				}
+			}()
+			defer rateQueue.queue.Done(envelope)
+
+			tctx := ctx
+			var tcancel context.CancelFunc = func() {}
+			if envelope.Deadline > 0 {
+				tctx, tcancel = context.WithTimeout(ctx, envelope.Deadline)
+			}
+			defer tcancel()
+
+			invoker := rateQueue.buildInvoker(envelope)
+			err := invoker(tctx, envelope)
+
+			if err == nil && tctx.Err() != nil {
+				err = tctx.Err()
+			}
+
+			switch {
+			case errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded):
+				rateQueue.queue.Forget(envelope)
+				if envelope.Interval > 0 {
+					rateQueue.queue.AddAfter(envelope, envelope.Interval)
+				}
+				return nil
+			case errors.Is(err, ErrStopEnvelope):
+				rateQueue.queue.Forget(envelope)
+				rateQueue.setToBlacklist(envelope.Type)
+				return nil
+			case err != nil:
+				if envelope.Interval > 0 {
+					rateQueue.queue.AddRateLimited(envelope)
+				} else {
+					rateQueue.queue.Forget(envelope)
+				}
+				return nil
+			default:
+				rateQueue.queue.Forget(envelope)
+				if envelope.Interval > 0 {
+					rateQueue.queue.AddAfter(envelope, envelope.Interval)
+				}
+				return nil
+			}
+		}(envelope)
+
+		if err != nil {
+			log.Printf(service+": envelope %s/%d error: %v", envelope.Type, envelope.Id, err)
 		}
 	}
 }
@@ -122,115 +149,6 @@ func NewRateEnvelopeQueue(options ...func(*RateEnvelopeQueue)) QueuePool {
 	queue.run.Store(true)
 
 	return queue
-}
-
-func withHookTimeout(ctx context.Context, base time.Duration, frac float64, min time.Duration) (context.Context, context.CancelFunc) {
-	d := time.Duration(float64(base) * frac)
-	if d < min {
-		d = min
-	}
-	if base == 0 {
-		d = min
-	}
-	return context.WithTimeout(ctx, d)
-}
-
-func (rateQueue *RateEnvelopeQueue) worker(ctx context.Context) {
-	if rateQueue.waiting {
-		defer rateQueue.wg.Done()
-	}
-	for {
-		item, shutdown := rateQueue.queue.Get()
-		if shutdown {
-			log.Printf(service + ": worker is shutting down")
-			return
-		}
-
-		if rateQueue.checkInBlacklist(item.Type) {
-			rateQueue.queue.Forget(item)
-			rateQueue.queue.Done(item)
-			continue
-		}
-
-		if item.BeforeHook != nil {
-			hctx, cancel := withHookTimeout(ctx, item.Deadline, 0.2, 800*time.Millisecond)
-			err := item.BeforeHook(hctx, item)
-			cancel()
-
-			if err != nil {
-				if errors.Is(err, ErrStopEnvelope) {
-					rateQueue.setToBlacklist(item.Type)
-				}
-				if item.Interval > 0 && !errors.Is(err, ErrStopEnvelope) {
-					rateQueue.queue.AddRateLimited(item)
-				} else {
-					rateQueue.queue.Forget(item)
-				}
-				rateQueue.queue.Done(item)
-				log.Printf(service+": envelope %s/%d before hook error: %v", item.Type, item.Id, err)
-				continue
-			}
-		}
-
-		err := func(envelope *Envelope) error {
-			defer rateQueue.queue.Done(envelope)
-
-			tctx := ctx
-			var tcancel context.CancelFunc = func() {}
-			if envelope.Deadline > 0 {
-				tctx, tcancel = context.WithTimeout(ctx, envelope.Deadline)
-			}
-			defer tcancel()
-
-			err := envelope.Invoke(tctx)
-			if err == nil && tctx.Err() != nil {
-				err = tctx.Err()
-			}
-
-			switch {
-			case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
-				rateQueue.queue.Forget(envelope)
-				if envelope.Interval > 0 {
-					rateQueue.queue.AddAfter(envelope, envelope.Interval)
-				}
-				return nil
-			case errors.Is(err, ErrStopEnvelope):
-				rateQueue.queue.Forget(envelope)
-				rateQueue.setToBlacklist(envelope.Type)
-				return nil
-			case err != nil:
-				if envelope.Interval > 0 {
-					rateQueue.queue.AddRateLimited(envelope)
-				} else {
-					rateQueue.queue.Forget(envelope)
-				}
-				return nil
-			default:
-				rateQueue.queue.Forget(envelope)
-				if envelope.Interval > 0 {
-					rateQueue.queue.AddAfter(envelope, envelope.Interval)
-				}
-				return nil
-			}
-		}(item)
-
-		if err != nil {
-			log.Printf(service+": envelope %s/%d error: %v", item.Type, item.Id, err)
-		}
-
-		if item.AfterHook != nil {
-			hctx, cancel := withHookTimeout(ctx, item.Deadline, 0.2, 800*time.Millisecond)
-			err := item.AfterHook(hctx, item)
-			cancel()
-
-			if err != nil {
-				if errors.Is(err, ErrStopEnvelope) {
-					rateQueue.setToBlacklist(item.Type)
-				}
-				log.Printf(service+": envelope %s/%d after hook error: %v", item.Type, item.Id, err)
-			}
-		}
-	}
 }
 
 func (rateQueue *RateEnvelopeQueue) setToBlacklist(types ...string) {
@@ -355,5 +273,42 @@ func (rateQueue *RateEnvelopeQueue) Stop() {
 func recoverWrap() {
 	if r := recover(); r != nil {
 		log.Printf(service+": panic recovered: %v\n%s", r, debug.Stack())
+	}
+}
+
+func WithLimitOption(limit int) func(*RateEnvelopeQueue) {
+	return func(queue *RateEnvelopeQueue) {
+		queue.limit = limit
+	}
+}
+
+func WithWaitingOption(waiting bool) func(*RateEnvelopeQueue) {
+	return func(queue *RateEnvelopeQueue) {
+		queue.waiting = waiting
+	}
+}
+
+func WithStopModeOption(stopMode StopMode) func(*RateEnvelopeQueue) {
+	return func(queue *RateEnvelopeQueue) {
+		if stopMode != Drain && stopMode != Stop {
+			panic("invalid stop mode")
+		}
+		queue.stopMode = stopMode
+	}
+}
+
+func WithWorkqueueConfigOption(conf *workqueue.TypedRateLimitingQueueConfig[*Envelope]) func(*RateEnvelopeQueue) {
+	return func(queue *RateEnvelopeQueue) {
+		if conf != nil {
+			queue.workqueueConf = conf
+		}
+	}
+}
+
+func WithLimiterOption(limiter workqueue.TypedRateLimiter[*Envelope]) func(*RateEnvelopeQueue) {
+	return func(queue *RateEnvelopeQueue) {
+		if limiter != nil {
+			queue.limiter = limiter
+		}
 	}
 }
