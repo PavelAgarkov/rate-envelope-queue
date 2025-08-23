@@ -154,9 +154,9 @@ type Envelope struct {
     Interval time.Duration // 0 = одноразовая задача
     Deadline time.Duration // 0 = без таймаута
 
-    BeforeHook func(ctx context.Context, item *Envelope) error
+    BeforeHook func(ctx context.Context, envelope *Envelope) error
     Invoke     func(ctx context.Context) error
-    AfterHook  func(ctx context.Context, item *Envelope) error
+    AfterHook  func(ctx context.Context, envelope *Envelope) error
 
     Stamps []Stamp // per-envelope stamps (внутренние)
 }

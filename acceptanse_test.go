@@ -23,13 +23,13 @@ func Test_Acceptance(t *testing.T) {
 			fmt.Println("📧 Email v1", time.Now())
 			return nil
 		},
-		BeforeHook: func(ctx context.Context, item *pkg.Envelope) error {
-			fmt.Println("hook before email", item.Id, time.Now())
+		BeforeHook: func(ctx context.Context, envelope *pkg.Envelope) error {
+			fmt.Println("hook before email", envelope.Id, time.Now())
 			//return pkg.ErrStopTask
 			return nil
 		},
-		AfterHook: func(ctx context.Context, item *pkg.Envelope) error {
-			fmt.Println("hook after email", item.Id, time.Now())
+		AfterHook: func(ctx context.Context, envelope *pkg.Envelope) error {
+			fmt.Println("hook after email", envelope.Id, time.Now())
 			return pkg.ErrStopEnvelope
 		},
 		Stamps: []pkg.Stamp{

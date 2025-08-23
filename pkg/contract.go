@@ -29,6 +29,6 @@ const (
 
 type QueuePool interface {
 	Start(ctx context.Context)
-	Add(task ...*Envelope) error
+	Add(envelopes ...*Envelope) error
 	Stop()
 }

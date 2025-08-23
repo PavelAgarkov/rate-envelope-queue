@@ -70,7 +70,7 @@ func (rateQueue *RateEnvelopeQueue) worker(ctx context.Context) {
 				if r := recover(); r != nil {
 					rateQueue.queue.Forget(envelope)
 					rateQueue.queue.Done(envelope)
-					log.Printf(service+": panic recovered in item: %v\n%s", r, debug.Stack())
+					log.Printf(service+": panic recovered in envelope: %v\n%s", r, debug.Stack())
 				}
 			}()
 			defer rateQueue.queue.Done(envelope)
