@@ -256,24 +256,24 @@ func (rateQueue *RateEnvelopeQueue) checkInBlacklist(t string) bool {
 	return exists
 }
 
-func (rateQueue *RateEnvelopeQueue) Add(envelops ...*Envelope) error {
-	if err := rateQueue.validateAdd(envelops...); err != nil {
+func (rateQueue *RateEnvelopeQueue) Add(envelopes ...*Envelope) error {
+	if err := rateQueue.validateAdd(envelopes...); err != nil {
 		return err
 	}
 
-	for _, envelope := range envelops {
+	for _, envelope := range envelopes {
 		rateQueue.queue.Add(envelope)
 	}
 
 	return nil
 }
 
-func (rateQueue *RateEnvelopeQueue) validateAdd(envelops ...*Envelope) error {
+func (rateQueue *RateEnvelopeQueue) validateAdd(envelopes ...*Envelope) error {
 	if !rateQueue.run.Load() || rateQueue.queue == nil {
 		return ErrEnvelopeQueueIsNotRunning
 	}
 
-	for _, envelope := range envelops {
+	for _, envelope := range envelopes {
 		if envelope.Type == "" || envelope.Invoke == nil || envelope.Interval < 0 || envelope.Deadline < 0 {
 			return ErrAdditionEnvelopeToQueueBadFields
 		}
