@@ -140,41 +140,31 @@ func Test_Acceptance(t *testing.T) {
 		"Food":    foodEnvelope,
 	}
 
-	//envelopeQueue := NewRateEnvelopeQueue(
-	//	parent,
-	//	WithLimitOption(3),
-	//	WithWaitingOption(true),
-	//	WithStopModeOption(Drain),
-	//	//WithStamps(
-	//	//	LoggingStamp(logger),
-	//	//	BeforeAfterStamp(WithHookTimeout),
-	//	//),
-	//)
+	var envelopeQueue QueuePool
+	start := func() {
+		envelopeQueue = NewRateEnvelopeQueue(
+			parent,
+			WithLimitOption(5),
+			WithWaitingOption(true),
+			WithStopModeOption(Drain),
+			WithStamps(
+				BeforeAfterStamp(WithHookTimeout),
+			),
+		)
+		envelopeQueue.Start()
 
-	//envelopeQueue.Start()
-	//err := envelopeQueue.Add(envelops["Email"], envelops["Metrics"], envelops["Food"], emailEnvelope, emailEnvelope1)
-	//if err != nil {
-	//	fmt.Println("add err:", err)
-	//}
-	//
-	//time.Sleep(1 * time.Second)
-	//envelopeQueue.Stop()
-
-	envelopeQueue := NewRateEnvelopeQueue(
-		parent,
-		WithLimitOption(5),
-		WithWaitingOption(true),
-		WithStopModeOption(Drain),
-		WithStamps(
-			BeforeAfterStamp(WithHookTimeout),
-		),
-	)
-
-	envelopeQueue.Start()
-	err := envelopeQueue.Add(envelops["Email"], envelops["Metrics"], envelops["Food"], emailEnvelope, emailEnvelope1, metricsEnvelope1, metricsEnvelope3)
-	if err != nil {
-		fmt.Println("add err:", err)
+		err := envelopeQueue.Add(envelops["Email"], envelops["Metrics"], envelops["Food"], emailEnvelope, emailEnvelope1, metricsEnvelope1, metricsEnvelope3)
+		if err != nil {
+			fmt.Println("add err:", err)
+		}
 	}
+	stop := func() {
+		envelopeQueue.Stop()
+	}
+
+	start()
+	stop()
+	start()
 
 	go func() {
 		select {
@@ -186,6 +176,6 @@ func Test_Acceptance(t *testing.T) {
 
 	<-parent.Done()
 	fmt.Println("parent: done")
-	envelopeQueue.Stop()
+	stop()
 	fmt.Println("queue: done")
 }
