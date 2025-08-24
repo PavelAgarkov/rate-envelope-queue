@@ -6,29 +6,53 @@
 
 ---
 
+## Что нового в API
+
+- **Builder-подход для Envelope** — поля неэкспортируемые, настройка через `NewEnvelope(opts...)` и `With*`-опции:
+  ```go
+  e := pkg.NewEnvelope(
+      pkg.WithId(1),
+      pkg.WithType("email"),
+      pkg.WithInterval(5*time.Second),
+      pkg.WithDeadline(3*time.Second),
+      pkg.WithBeforeHook(func(ctx context.Context, e *pkg.Envelope) error { return nil }),
+      pkg.WithInvoke(func(ctx context.Context) error { return nil }),
+      pkg.WithAfterHook(func(ctx context.Context, e *pkg.Envelope) error { return nil }),
+      pkg.WithStampsPerEnvelope(/* per-envelope stamps */),
+  )
+  ```
+  Для чтения используйте геттеры: `GetId()`, `GetType()`, `GetStamps()`.
+
+- **Stamps разделены на глобальные и per-envelope**:
+    - Глобальные — через `WithStamps(...)` в конструкторе очереди.
+    - Per-envelope — через `WithStampsPerEnvelope(...)` в `NewEnvelope(...)`.
+    - Порядок исполнения: **сначала глобальные, затем per-envelope** (глобальные — внешние).
+
+- **Тайм‑бюджеты для хуков** в `BeforeAfterStamp`: по умолчанию рекомендуем `frac=0.5` и `min=800ms` → `max(50% от deadline, 800ms)`.
+
+---
+
 ## Возможности
 
-- **Фиксированный пул воркеров**: настраиваемый параллелизм через `WithLimitOption`.
+- **Фиксированный пул воркеров**: параллелизм через `WithLimitOption`.
 - **Периодические и одноразовые задачи**: `interval > 0` → периодические; `interval == 0` → одноразовые.
-- **Дедлайны**: `deadline > 0` ограничивает время выполнения `invoke` (в воркере оборачивается таймаутом).
-- **Хуки**: `beforeHook` / `afterHook` с отдельным тайм‑бюджетом (по умолчанию `max(20% от deadline, 800ms)`), задаётся через `WithHookTimeout`.
-- **stamps (middleware)**:
-    - **Глобальные** (для всей очереди) — задаются через `WithStamps(...)`.
-    - **Per‑envelope** — в `Envelope.stamps`.
-    - Порядок компоновки: **сначала глобальные, затем per‑envelope** — глобальные оказываются **внешними**.
-- **Семантика остановки типа**: верните `ErrStopEnvelope` из `beforeHook`/`invoke`/`afterHook`, чтобы поместить `Envelope._type` в blacklist — все будущие задачи этого типа игнорируются.
-- **Ретраи и backoff**: дефолтный лимитер = `MaxOf(Exponential(1s..30s), TokenBucket(5 rps, burst=10))`.
-- **Грациозная остановка**: режимы `Drain` (дождаться завершения) и `Stop` (остановить сразу).
-- **Безопасность при паниках**: паника в обработке **конверта** перехватывается, элемент `Forget+Done`, стек логируется; паника уровня воркера тоже перехватывается.
+- **Дедлайны**: `deadline > 0` ограничивает время выполнения `invoke` (оборачивается таймаутом в воркере).
+- **Хуки**: `beforeHook` / `afterHook` с отдельным тайм-бюджетом (через `BeforeAfterStamp(WithHookTimeout)`).
+- **Stamps (middleware)**: глобальные и per-envelope; компонуются в цепочку (**chain**).
+- **Остановка типа**: `ErrStopEnvelope` из любого места (`beforeHook`/`invoke`/`afterHook`) кладёт `_type` в **blacklist**.
+- **Backoff/ретраи**: дефолтный лимитер = `MaxOf(Exponential(1s..30s), TokenBucket(5 rps, burst=10))`.
+- **Грациозная остановка**: режимы `Drain`/`Stop`.
+- **Безопасность при паниках**: паника внутри обработки **конверта** → `Forget+Done` и лог стека; паника воркера также перехватывается.
 
 ---
 
 ## Требования
 
-- Go рекомендуется **1.22+** (`atomic.Bool`).
+- Go Рекомендовано **1.22+** (`atomic.Bool`).
 - Модули:
     - `k8s.io/client-go/util/workqueue`
     - `golang.org/x/time/rate`
+
 ---
 
 ## Установка
@@ -54,48 +78,48 @@ q := pkg.NewRateEnvelopeQueue(
     pkg.WithWaitingOption(true),      // ждать завершения горутин при Stop()
     pkg.WithStopModeOption(pkg.Drain),
     pkg.WithStamps(                   // глобальные stamps (внешние)
+        pkg.BeforeAfterStamp(pkg.WithHookTimeout), // 50% от deadline, минимум 800ms
         pkg.LoggingStamp(log.Default()),
-        pkg.BeforeAfterStamp(pkg.WithHookTimeout),
     ),
 )
 
-// периодическая задача
-metrics := &pkg.Envelope{
-    id:       2,
-    _type:     "metrics",
-    interval: 3 * time.Second,
-    deadline: 1 * time.Second,
-    invoke: func(ctx context.Context) error {
-        fmt.Println("📊 Metrics", time.Now())
+email := pkg.NewEnvelope(
+    pkg.WithId(1),
+    pkg.WithType("email"),
+    pkg.WithInterval(5*time.Second),
+    pkg.WithDeadline(3*time.Second),
+    pkg.WithBeforeHook(func(ctx context.Context, e *pkg.Envelope) error {
+        fmt.Println("before:", e.GetId(), time.Now())
         return nil
-    },
-}
+    }),
+    pkg.WithInvoke(func(ctx context.Context) error {
+        // имитируем работу; уважайте ctx.Done()
+        time.Sleep(5 * time.Second)
+        fmt.Println("invoke email", time.Now())
+        return nil
+    }),
+    pkg.WithAfterHook(func(ctx context.Context, e *pkg.Envelope) error {
+        fmt.Println("after:", e.GetId(), time.Now())
+        // Остановим дальнейшие email
+        return pkg.ErrStopEnvelope
+    }),
+)
 
-// одноразовая задача + per-envelope stamps (внутренние)
-email := &pkg.Envelope{
-    id:       1,
-    _type:     "email",
-    interval: 0,
-    deadline: 2 * time.Second,
-    invoke: func(ctx context.Context) error {
-        // уважайте ctx.Done()
+metrics := pkg.NewEnvelope(
+    pkg.WithId(2),
+    pkg.WithType("metrics"),
+    pkg.WithInterval(3*time.Second),
+    pkg.WithDeadline(1*time.Second),
+    pkg.WithInvoke(func(ctx context.Context) error {
+        fmt.Println("metrics tick", time.Now())
         return nil
-    },
-    beforeHook: func(ctx context.Context, e *pkg.Envelope) error {
-        return nil
-    },
-    afterHook: func(ctx context.Context, e *pkg.Envelope) error {
-        return nil
-    },
-    stamps: []pkg.Stamp{
-        // свои пер-задачные обёртки (внутренние относительно глобальных)
-    },
-}
+    }),
+)
 
 q.Start(ctx)
-_ = q.Add(metrics, email)
+_ = q.Add(email, metrics)
 
-time.AfterFunc(10*time.Second, cancel)
+time.AfterFunc(25*time.Second, cancel)
 <-ctx.Done()
 
 q.Stop()
@@ -109,7 +133,7 @@ q.Stop()
 |------------------------------------------------------------------|----------------------------------------------------------------------------------|
 | `invoke` вернул `nil`                                            | `Forget`; если `interval > 0` → `AddAfter(interval)`                             |
 | Контекст задачи истёк/отменён (`DeadlineExceeded`/`Canceled`)    | `Forget`; если периодическая → `AddAfter(interval)`                              |
-| `ErrStopEnvelope` (из `beforeHook`/`invoke`/`afterHook`)         | `Forget` + поместить `_type` в **blacklist**                                      |
+| `ErrStopEnvelope` (из `beforeHook`/`invoke`/`afterHook`)         | `Forget` + поместить `_type` в **blacklist**                                     |
 | Ошибка в `beforeHook` (не `ErrStopEnvelope`)                     | Периодические: `AddRateLimited`; одноразовые: `Forget`                           |
 | Ошибка в `invoke` (не `ErrStopEnvelope`)                         | Периодические: `AddRateLimited`; одноразовые: `Forget`                           |
 | Ошибка в `afterHook` (не `ErrStopEnvelope`)                      | Возвращается наверх → те же правила, что и для обычной ошибки                   |
@@ -119,154 +143,67 @@ q.Stop()
 
 ---
 
-## stamps (middleware)
+## Stamps (middleware)
 
-stamps — это лёгкие обёртки вокруг `Invoker` (обработчика конверта). Их две группы:
+Stamps — это обёртки вокруг `Invoker` (обработчика конверта).
 
 - **Глобальные stamps** — задаются на очередь через `WithStamps(...)`.
-- **Per‑envelope stamps** — задаются конкретной задачей в `Envelope.stamps`.
+- **Per-envelope stamps** — через `WithStampsPerEnvelope(...)` в `NewEnvelope(...)`.
 
-Порядок: глобальные идут **первее** и становятся **внешними** (самыми «оборачивающими»), затем per‑envelope — **внутренние**.
+Порядок: глобальные идут **первее** и становятся **внешними** (самыми «оборачивающими»), затем per-envelope — **внутренние**.
 
 ### Встроенные stamps
 
-- `LoggingStamp(l *log.Logger)` — логирует длительность и ошибку обработки конверта.
 - `BeforeAfterStamp(withTimeout)` — исполняет `beforeHook` и `afterHook` с отдельными тайм-бюджетами; любые ошибки, кроме `ErrStopEnvelope`, **возвращаются** наверх. Рекомендуемая функция тайм-бюджета:  
-  `WithHookTimeout(ctx, base=deadline, frac=0.2, min=800ms)` → `max(20% от deadline, 800ms)`.
-
-> Можно добавлять свои stamps для метрик/трейсинга/ограничения ресурсов.
+  `WithHookTimeout(ctx, base=deadline, frac=0.5, min=800ms)` → `max(50% от deadline, 800ms)`.
+- `LoggingStamp(l *log.Logger)` — логирует длительность и ошибку обработки конверта.
 
 ---
 
-## API (сокращённо)
+## Публичные функции и опции
+
+### Конструктор и геттеры
 
 ```go
-type StopMode string
+e := pkg.NewEnvelope(opts...)
 
-const (
-    Drain StopMode = "drain" // грациозная остановка (drain)
-    Stop  StopMode = "stop"  // немедленная остановка
-)
-
-type Envelope struct {
-    id       uint64
-    _type     string
-    interval time.Duration // 0 = одноразовая задача
-    deadline time.Duration // 0 = без таймаута
-
-    beforeHook func(ctx context.Context, envelope *Envelope) error
-    invoke     func(ctx context.Context) error
-    afterHook  func(ctx context.Context, envelope *Envelope) error
-
-    stamps []Stamp // per-envelope stamps (внутренние)
-}
-
-type QueuePool interface {
-    Start(ctx context.Context)
-    Add(envelopes ...*Envelope) error
-    Stop()
-}
-
-// stamps
-type Invoker func(ctx context.Context, envelope *Envelope) error
-type Stamp   func(next Invoker) Invoker
-
-// конструктор
-func NewRateEnvelopeQueue(options ...func(*RateEnvelopeQueue)) QueuePool
+id   := e.GetId()
+name := e.GetType()
+st   := e.GetStamps()
 ```
 
-### Опции конструктора
+### Опции `Envelope`
 
 ```go
-pkg.WithLimitOption(n)                 // число воркеров (>0)
-pkg.WithWaitingOption(true|false)      // ждать ли завершения воркеров в Stop()
+pkg.WithId(id uint64)
+pkg.WithType(t string)
+pkg.WithInterval(d time.Duration)      // 0 = одноразовая задача
+pkg.WithDeadline(d time.Duration)      // 0 = без таймаута
+pkg.WithBeforeHook(func(ctx context.Context, e *Envelope) error)
+pkg.WithInvoke(func(ctx context.Context) error)
+pkg.WithAfterHook(func(ctx context.Context, e *Envelope) error)
+pkg.WithStampsPerEnvelope(stamps ...Stamp)
+```
+
+### Опции очереди
+
+```go
+pkg.WithLimitOption(n)                        // число воркеров (>0)
+pkg.WithWaitingOption(true|false)             // ждать ли завершения воркеров в Stop()
 pkg.WithStopModeOption(pkg.Drain|pkg.Stop)
-pkg.WithLimiterOption(customLimiter)   // если не задан — дефолтный
-pkg.WithWorkqueueConfigOption(conf)    // конфиг workqueue (например, имя для метрик)
-pkg.WithStamps(stamps...)              // глобальные stamps
+pkg.WithLimiterOption(customLimiter)          // если не задан — дефолтный
+pkg.WithWorkqueueConfigOption(conf)           // конфиг workqueue
+pkg.WithStamps(stamps...)                     // глобальные stamps
 ```
-
-**Дефолтный rate-limiter**:  
-`MaxOf(ItemExponentialFailureRateLimiter(1s..30s), BucketRateLimiter(5 rps, burst=10))`.
 
 ### Ошибки
 
-- `ErrStopEnvelope` — поместить `_type` в blacklist.
-- `ErrEnvelopeInBlacklist` — попытка добавить envelope с типом из blacklist.
-- `ErrEnvelopeQueueIsNotRunning` — `Add` до `Start`/после `Stop`.
-- `ErrAdditionEnvelopeToQueueBadFields` — неверные поля (`_type`, `invoke`, `interval`, `deadline`).
-- `ErrAdditionEnvelopeToQueueBadIntervals` — `deadline > interval` для периодических.
-
----
-
-## Пример из теста (адаптирован)
-
 ```go
-func Test_Acceptance(t *testing.T) {
-    ctx, cancel := context.WithCancel(context.Background())
-    defer cancel()
-
-    logger := log.New(os.Stdout, "", log.LstdFlags)
-
-    email := &pkg.Envelope{
-        id:       1,
-        _type:     "email",
-        interval: 5 * time.Second,
-        deadline: 3 * time.Second,
-        invoke: func(ctx context.Context) error {
-            time.Sleep(5 * time.Second) // превысит дедлайн
-            fmt.Println("📧 Email v1", time.Now())
-            return nil
-        },
-        beforeHook: func(ctx context.Context, e *pkg.Envelope) error {
-            fmt.Println("hook before email", e.id, time.Now())
-            return nil
-        },
-        afterHook: func(ctx context.Context, e *pkg.Envelope) error {
-            fmt.Println("hook after email", e.id, time.Now())
-            // остановим дальнейшие email
-            return pkg.ErrStopEnvelope
-        },
-        stamps: []pkg.Stamp{
-            pkg.LoggingStamp(logger),
-            pkg.BeforeAfterStamp(pkg.WithHookTimeout),
-        },
-    }
-
-    metrics := &pkg.Envelope{
-        id:       2,
-        _type:     "metrics",
-        interval: 3 * time.Second,
-        deadline: 1 * time.Second,
-        invoke: func(ctx context.Context) error {
-            fmt.Println("📊 Metrics", time.Now())
-            return nil
-        },
-    }
-
-    food := &pkg.Envelope{
-        id:       3,
-        _type:     "food",
-        interval: 2 * time.Second,
-        deadline: 1 * time.Second,
-        invoke: func(ctx context.Context) error {
-            fmt.Println("🍔 Fooding", time.Now())
-            return nil
-        },
-    }
-
-    q := pkg.NewRateEnvelopeQueue(
-        pkg.WithLimitOption(3),
-        pkg.WithWaitingOption(true),
-        pkg.WithStopModeOption(pkg.Drain),
-    )
-
-    q.Start(ctx)
-    _ = q.Add(email, metrics, food, email) // повтор email будет дедуплицирован
-    time.AfterFunc(25*time.Second, cancel)
-    <-ctx.Done()
-    q.Stop()
-}
+pkg.ErrStopEnvelope                         // поместить `_type` в blacklist
+pkg.ErrEnvelopeInBlacklist                  // попытка добавить тип из blacklist
+pkg.ErrEnvelopeQueueIsNotRunning            // Add до Start/после Stop
+pkg.ErrAdditionEnvelopeToQueueBadFields     // пустой тип / nil invoke / отрицательные интервалы
+pkg.ErrAdditionEnvelopeToQueueBadIntervals  // deadline > interval для периодических
 ```
 
 ---
