@@ -1,5 +1,5 @@
 # rate-envelope-queue
-
+check
 Лёгкий пакет для управления пулом задач (**envelopes**) поверх `k8s.io/client-go/util/workqueue` с ограничением
 параллелизма, ретраями, периодическим планированием, **stamps (middleware)** и хуками до/после выполнения.
 
