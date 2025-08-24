@@ -1,4 +1,4 @@
-package pkg
+package rate_envelope_queue
 
 import (
 	"context"
