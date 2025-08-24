@@ -14,6 +14,8 @@ import (
 )
 
 type RateEnvelopeQueue struct {
+	ctx context.Context
+
 	limit         int
 	queue         workqueue.TypedRateLimitingInterface[*Envelope]
 	limiter       workqueue.TypedRateLimiter[*Envelope]
@@ -122,10 +124,11 @@ func (rateQueue *RateEnvelopeQueue) worker(ctx context.Context) {
 	}
 }
 
-func NewRateEnvelopeQueue(options ...func(*RateEnvelopeQueue)) QueuePool {
+func NewRateEnvelopeQueue(ctx context.Context, options ...func(*RateEnvelopeQueue)) QueuePool {
 	queue := &RateEnvelopeQueue{
 		waiting:   true,
 		blacklist: make(map[string]struct{}),
+		ctx:       ctx,
 	}
 	for _, option := range options {
 		option(queue)
@@ -206,7 +209,7 @@ func (rateQueue *RateEnvelopeQueue) validateAdd(envelopes ...*Envelope) error {
 	return nil
 }
 
-func (rateQueue *RateEnvelopeQueue) Start(ctx context.Context) {
+func (rateQueue *RateEnvelopeQueue) Start() {
 	if !rateQueue.run.Load() || rateQueue.queue != nil {
 		log.Printf(service + ": queue is not in a startable state")
 		return
@@ -228,7 +231,7 @@ func (rateQueue *RateEnvelopeQueue) Start(ctx context.Context) {
 		}
 		go func() {
 			defer recoverWrap()
-			rateQueue.worker(ctx)
+			rateQueue.worker(rateQueue.ctx)
 		}()
 	}
 }

@@ -12,7 +12,7 @@ import (
 )
 
 func Test_Acceptance(t *testing.T) {
-	patent, cancel := context.WithCancel(context.Background())
+	parent, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
 	sig := make(chan os.Signal, 1)
@@ -141,6 +141,7 @@ func Test_Acceptance(t *testing.T) {
 	}
 
 	//envelopeQueue := NewRateEnvelopeQueue(
+	//	parent,
 	//	WithLimitOption(3),
 	//	WithWaitingOption(true),
 	//	WithStopModeOption(Drain),
@@ -150,7 +151,7 @@ func Test_Acceptance(t *testing.T) {
 	//	//),
 	//)
 
-	//envelopeQueue.Start(patent)
+	//envelopeQueue.Start()
 	//err := envelopeQueue.Add(envelops["Email"], envelops["Metrics"], envelops["Food"], emailEnvelope, emailEnvelope1)
 	//if err != nil {
 	//	fmt.Println("add err:", err)
@@ -160,6 +161,7 @@ func Test_Acceptance(t *testing.T) {
 	//envelopeQueue.Stop()
 
 	envelopeQueue := NewRateEnvelopeQueue(
+		parent,
 		WithLimitOption(5),
 		WithWaitingOption(true),
 		WithStopModeOption(Drain),
@@ -168,7 +170,7 @@ func Test_Acceptance(t *testing.T) {
 		),
 	)
 
-	envelopeQueue.Start(patent)
+	envelopeQueue.Start()
 	err := envelopeQueue.Add(envelops["Email"], envelops["Metrics"], envelops["Food"], emailEnvelope, emailEnvelope1, metricsEnvelope1, metricsEnvelope3)
 	if err != nil {
 		fmt.Println("add err:", err)
@@ -182,7 +184,7 @@ func Test_Acceptance(t *testing.T) {
 		}
 	}()
 
-	<-patent.Done()
+	<-parent.Done()
 	fmt.Println("parent: done")
 	envelopeQueue.Stop()
 	fmt.Println("queue: done")
