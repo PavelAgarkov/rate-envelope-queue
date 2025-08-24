@@ -71,7 +71,6 @@ func (rateQueue *RateEnvelopeQueue) worker(ctx context.Context) {
 			defer func() {
 				if r := recover(); r != nil {
 					rateQueue.queue.Forget(envelope)
-					rateQueue.queue.Done(envelope)
 					log.Printf(service+": panic recovered in envelope: %v\n%s", r, debug.Stack())
 				}
 			}()
@@ -91,10 +90,12 @@ func (rateQueue *RateEnvelopeQueue) worker(ctx context.Context) {
 				err = tctx.Err()
 			}
 
+			alive := rateQueue.run.Load() && rateQueue.ctx != nil && rateQueue.ctx.Err() == nil
+
 			switch {
 			case errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded):
 				rateQueue.queue.Forget(envelope)
-				if envelope.interval > 0 {
+				if envelope.interval > 0 && alive {
 					rateQueue.queue.AddAfter(envelope, envelope.interval)
 				}
 				return nil
@@ -103,7 +104,7 @@ func (rateQueue *RateEnvelopeQueue) worker(ctx context.Context) {
 				rateQueue.setToBlacklist(envelope._type)
 				return nil
 			case err != nil:
-				if envelope.interval > 0 {
+				if envelope.interval > 0 && alive {
 					rateQueue.queue.AddRateLimited(envelope)
 				} else {
 					rateQueue.queue.Forget(envelope)
@@ -111,7 +112,7 @@ func (rateQueue *RateEnvelopeQueue) worker(ctx context.Context) {
 				return nil
 			default:
 				rateQueue.queue.Forget(envelope)
-				if envelope.interval > 0 {
+				if envelope.interval > 0 && alive {
 					rateQueue.queue.AddAfter(envelope, envelope.interval)
 				}
 				return nil
@@ -125,6 +126,10 @@ func (rateQueue *RateEnvelopeQueue) worker(ctx context.Context) {
 }
 
 func NewRateEnvelopeQueue(ctx context.Context, options ...func(*RateEnvelopeQueue)) QueuePool {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
 	queue := &RateEnvelopeQueue{
 		waiting:   true,
 		blacklist: make(map[string]struct{}),
