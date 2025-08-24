@@ -68,13 +68,13 @@ func (rateQueue *RateEnvelopeQueue) worker(ctx context.Context) {
 		}
 
 		err := func(envelope *Envelope) error {
+			defer rateQueue.queue.Done(envelope)
 			defer func() {
 				if r := recover(); r != nil {
 					rateQueue.queue.Forget(envelope)
 					log.Printf(service+": panic recovered in envelope: %v\n%s", r, debug.Stack())
 				}
 			}()
-			defer rateQueue.queue.Done(envelope)
 
 			tctx := ctx
 			var tcancel context.CancelFunc = func() {}
@@ -200,6 +200,9 @@ func (rateQueue *RateEnvelopeQueue) validateAdd(envelopes ...*Envelope) error {
 	}
 
 	for _, envelope := range envelopes {
+		if envelope == nil {
+			return ErrAdditionEnvelopeToQueueBadFields
+		}
 		if envelope._type == "" || envelope.invoke == nil || envelope.interval < 0 || envelope.deadline < 0 {
 			return ErrAdditionEnvelopeToQueueBadFields
 		}
