@@ -39,12 +39,12 @@ func chain(base Invoker, stamps ...Stamp) Invoker {
 	return w
 }
 
-func (rateQueue *RateEnvelopeQueue) buildInvoker(e *Envelope) Invoker {
+func (rateQueue *RateEnvelopeQueue) buildInvokerChain(e *Envelope) Invoker {
 	base := func(ctx context.Context, env *Envelope) error {
-		return env.Invoke(ctx)
+		return env.invoke(ctx)
 	}
 	// порядок: сначала глобальные, потом пер-задачные
-	inv := chain(base, append(rateQueue.queueStamps, e.Stamps...)...)
+	inv := chain(base, append(rateQueue.queueStamps, e.stamps...)...)
 	return inv
 }
 
@@ -59,7 +59,7 @@ func (rateQueue *RateEnvelopeQueue) worker(ctx context.Context) {
 			return
 		}
 
-		if rateQueue.checkInBlacklist(envelope.Type) {
+		if rateQueue.checkInBlacklist(envelope._type) {
 			rateQueue.queue.Forget(envelope)
 			rateQueue.queue.Done(envelope)
 			continue
@@ -77,13 +77,13 @@ func (rateQueue *RateEnvelopeQueue) worker(ctx context.Context) {
 
 			tctx := ctx
 			var tcancel context.CancelFunc = func() {}
-			if envelope.Deadline > 0 {
-				tctx, tcancel = context.WithTimeout(ctx, envelope.Deadline)
+			if envelope.deadline > 0 {
+				tctx, tcancel = context.WithTimeout(ctx, envelope.deadline)
 			}
 			defer tcancel()
 
-			invoker := rateQueue.buildInvoker(envelope)
-			err := invoker(tctx, envelope)
+			invokerChain := rateQueue.buildInvokerChain(envelope)
+			err := invokerChain(tctx, envelope)
 
 			if err == nil && tctx.Err() != nil {
 				err = tctx.Err()
@@ -92,16 +92,16 @@ func (rateQueue *RateEnvelopeQueue) worker(ctx context.Context) {
 			switch {
 			case errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded):
 				rateQueue.queue.Forget(envelope)
-				if envelope.Interval > 0 {
-					rateQueue.queue.AddAfter(envelope, envelope.Interval)
+				if envelope.interval > 0 {
+					rateQueue.queue.AddAfter(envelope, envelope.interval)
 				}
 				return nil
 			case errors.Is(err, ErrStopEnvelope):
 				rateQueue.queue.Forget(envelope)
-				rateQueue.setToBlacklist(envelope.Type)
+				rateQueue.setToBlacklist(envelope._type)
 				return nil
 			case err != nil:
-				if envelope.Interval > 0 {
+				if envelope.interval > 0 {
 					rateQueue.queue.AddRateLimited(envelope)
 				} else {
 					rateQueue.queue.Forget(envelope)
@@ -109,15 +109,15 @@ func (rateQueue *RateEnvelopeQueue) worker(ctx context.Context) {
 				return nil
 			default:
 				rateQueue.queue.Forget(envelope)
-				if envelope.Interval > 0 {
-					rateQueue.queue.AddAfter(envelope, envelope.Interval)
+				if envelope.interval > 0 {
+					rateQueue.queue.AddAfter(envelope, envelope.interval)
 				}
 				return nil
 			}
 		}(envelope)
 
 		if err != nil {
-			log.Printf(service+": envelope %s/%d error: %v", envelope.Type, envelope.Id, err)
+			log.Printf(service+": envelope %s/%d error: %v", envelope._type, envelope.id, err)
 		}
 	}
 }
@@ -192,13 +192,13 @@ func (rateQueue *RateEnvelopeQueue) validateAdd(envelopes ...*Envelope) error {
 	}
 
 	for _, envelope := range envelopes {
-		if envelope.Type == "" || envelope.Invoke == nil || envelope.Interval < 0 || envelope.Deadline < 0 {
+		if envelope._type == "" || envelope.invoke == nil || envelope.interval < 0 || envelope.deadline < 0 {
 			return ErrAdditionEnvelopeToQueueBadFields
 		}
-		if envelope.Interval > 0 && envelope.Deadline > envelope.Interval {
+		if envelope.interval > 0 && envelope.deadline > envelope.interval {
 			return ErrAdditionEnvelopeToQueueBadIntervals
 		}
-		if rateQueue.checkInBlacklist(envelope.Type) {
+		if rateQueue.checkInBlacklist(envelope._type) {
 			return ErrEnvelopeInBlacklist
 		}
 	}
