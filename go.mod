@@ -1,4 +1,4 @@
-module github.com/PavelAgarkov/rate-pool
+module github.com/PavelAgarkov/rate-envelope-queue
 
 go 1.24.0
 

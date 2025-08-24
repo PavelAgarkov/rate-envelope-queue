@@ -1,96 +1,106 @@
-package main
+package rate_envelope_queue
 
 import (
 	"context"
 	"fmt"
+	"os"
+	"os/signal"
+	"syscall"
 	"testing"
 	"time"
-
-	"github.com/PavelAgarkov/rate-pool/pkg"
 )
 
 func Test_Acceptance(t *testing.T) {
 	patent, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+	sig := make(chan os.Signal, 1)
+	signal.Notify(sig, syscall.SIGTERM, syscall.SIGINT, syscall.SIGQUIT)
+
+	go func() {
+		<-sig
+		fmt.Println("signal shutdown")
+		cancel()
+	}()
+
 	//logger := log.New(os.Stdout, "", log.LstdFlags)
 
-	emailEnvelope := pkg.NewEnvelope(
-		pkg.WithId(1),
-		pkg.WithType("email"),
-		pkg.WithInterval(5*time.Second),
-		pkg.WithDeadline(3*time.Second),
-		pkg.WithInvoke(func(ctx context.Context) error {
+	emailEnvelope := NewEnvelope(
+		WithId(1),
+		WithType("email"),
+		WithInterval(5*time.Second),
+		WithDeadline(3*time.Second),
+		WithInvoke(func(ctx context.Context) error {
 			time.Sleep(5 * time.Second)
 			fmt.Println("📧 Email v2", time.Now())
 			return nil
 		}),
-		pkg.WithBeforeHook(func(ctx context.Context, envelope *pkg.Envelope) error {
+		WithBeforeHook(func(ctx context.Context, envelope *Envelope) error {
 			fmt.Println("hook before email", envelope.GetId(), time.Now())
-			//return pkg.ErrStopTask
+			//return ErrStopTask
 			return nil
 		}),
-		pkg.WithAfterHook(func(ctx context.Context, envelope *pkg.Envelope) error {
+		WithAfterHook(func(ctx context.Context, envelope *Envelope) error {
 			fmt.Println("hook after email", envelope.GetId(), time.Now())
-			return pkg.ErrStopEnvelope
+			return ErrStopEnvelope
 		}),
 	)
 
-	metricsEnvelope := pkg.NewEnvelope(
-		pkg.WithId(2),
-		pkg.WithType("metrics"),
-		pkg.WithInterval(3*time.Second),
-		pkg.WithDeadline(1*time.Second),
-		pkg.WithInvoke(func(ctx context.Context) error {
+	metricsEnvelope := NewEnvelope(
+		WithId(2),
+		WithType("metrics"),
+		WithInterval(3*time.Second),
+		WithDeadline(1*time.Second),
+		WithInvoke(func(ctx context.Context) error {
 			fmt.Println("📧 Metrics", time.Now())
 			return nil
 		}),
-		pkg.WithBeforeHook(func(ctx context.Context, envelope *pkg.Envelope) error {
+		WithBeforeHook(func(ctx context.Context, envelope *Envelope) error {
 			return nil
 		}),
-		pkg.WithInvoke(func(ctx context.Context) error {
+		WithInvoke(func(ctx context.Context) error {
 			fmt.Println("📧 Metrics v2", time.Now())
 			return nil
 		}),
-		pkg.WithAfterHook(func(ctx context.Context, envelope *pkg.Envelope) error {
+		WithAfterHook(func(ctx context.Context, envelope *Envelope) error {
 			return nil
 		}),
 	)
 
-	foodEnvelope := pkg.NewEnvelope(
-		pkg.WithId(3),
-		pkg.WithType("food"),
-		pkg.WithInterval(2*time.Second),
-		pkg.WithDeadline(1*time.Second),
-		pkg.WithInvoke(func(ctx context.Context) error {
+	foodEnvelope := NewEnvelope(
+		WithId(3),
+		WithType("food"),
+		WithInterval(2*time.Second),
+		WithDeadline(1*time.Second),
+		WithInvoke(func(ctx context.Context) error {
 			fmt.Println("📧Fooding", time.Now())
 			return nil
 		}),
-		pkg.WithBeforeHook(func(ctx context.Context, envelope *pkg.Envelope) error {
+		WithBeforeHook(func(ctx context.Context, envelope *Envelope) error {
 			return nil
 		}),
-		pkg.WithInvoke(func(ctx context.Context) error {
+		WithInvoke(func(ctx context.Context) error {
 			fmt.Println("📧Fooding v2", time.Now())
 			return nil
 		}),
-		pkg.WithAfterHook(func(ctx context.Context, envelope *pkg.Envelope) error {
+		WithAfterHook(func(ctx context.Context, envelope *Envelope) error {
 			return nil
 		}),
 	)
 
-	envelops := map[string]*pkg.Envelope{
+	envelops := map[string]*Envelope{
 		"Email":   emailEnvelope,
 		"Metrics": metricsEnvelope,
 		"Food":    foodEnvelope,
 	}
 
-	envelopeQueue := pkg.NewRateEnvelopeQueue(
-		pkg.WithLimitOption(3),
-		pkg.WithWaitingOption(true),
-		pkg.WithStopModeOption(pkg.Drain),
-		//pkg.WithStamps(
-		//	pkg.LoggingStamp(logger),
-		//	pkg.BeforeAfterStamp(pkg.WithHookTimeout),
+	envelopeQueue := NewRateEnvelopeQueue(
+		WithLimitOption(3),
+		WithWaitingOption(true),
+		WithStopModeOption(Drain),
+		//WithStamps(
+		//	LoggingStamp(logger),
+		//	BeforeAfterStamp(WithHookTimeout),
 		//),
 	)
 
@@ -103,12 +113,12 @@ func Test_Acceptance(t *testing.T) {
 	time.Sleep(1 * time.Second)
 	envelopeQueue.Stop()
 
-	envelopeQueue = pkg.NewRateEnvelopeQueue(
-		pkg.WithLimitOption(3),
-		pkg.WithWaitingOption(true),
-		pkg.WithStopModeOption(pkg.Drain),
-		pkg.WithStamps(
-			pkg.BeforeAfterStamp(pkg.WithHookTimeout),
+	envelopeQueue = NewRateEnvelopeQueue(
+		WithLimitOption(3),
+		WithWaitingOption(true),
+		WithStopModeOption(Drain),
+		WithStamps(
+			BeforeAfterStamp(WithHookTimeout),
 		),
 	)
 
