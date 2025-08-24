@@ -9,14 +9,14 @@
 ## Возможности
 
 - **Фиксированный пул воркеров**: настраиваемый параллелизм через `WithLimitOption`.
-- **Периодические и одноразовые задачи**: `Interval > 0` → периодические; `Interval == 0` → одноразовые.
-- **Дедлайны**: `Deadline > 0` ограничивает время выполнения `Invoke` (в воркере оборачивается таймаутом).
-- **Хуки**: `BeforeHook` / `AfterHook` с отдельным тайм‑бюджетом (по умолчанию `max(20% от Deadline, 800ms)`), задаётся через `WithHookTimeout`.
-- **Stamps (middleware)**:
+- **Периодические и одноразовые задачи**: `interval > 0` → периодические; `interval == 0` → одноразовые.
+- **Дедлайны**: `deadline > 0` ограничивает время выполнения `invoke` (в воркере оборачивается таймаутом).
+- **Хуки**: `beforeHook` / `afterHook` с отдельным тайм‑бюджетом (по умолчанию `max(20% от deadline, 800ms)`), задаётся через `WithHookTimeout`.
+- **stamps (middleware)**:
     - **Глобальные** (для всей очереди) — задаются через `WithStamps(...)`.
-    - **Per‑envelope** — в `Envelope.Stamps`.
+    - **Per‑envelope** — в `Envelope.stamps`.
     - Порядок компоновки: **сначала глобальные, затем per‑envelope** — глобальные оказываются **внешними**.
-- **Семантика остановки типа**: верните `ErrStopEnvelope` из `BeforeHook`/`Invoke`/`AfterHook`, чтобы поместить `Envelope.Type` в blacklist — все будущие задачи этого типа игнорируются.
+- **Семантика остановки типа**: верните `ErrStopEnvelope` из `beforeHook`/`invoke`/`afterHook`, чтобы поместить `Envelope._type` в blacklist — все будущие задачи этого типа игнорируются.
 - **Ретраи и backoff**: дефолтный лимитер = `MaxOf(Exponential(1s..30s), TokenBucket(5 rps, burst=10))`.
 - **Грациозная остановка**: режимы `Drain` (дождаться завершения) и `Stop` (остановить сразу).
 - **Безопасность при паниках**: паника в обработке **конверта** перехватывается, элемент `Forget+Done`, стек логируется; паника уровня воркера тоже перехватывается.
@@ -61,11 +61,11 @@ q := pkg.NewRateEnvelopeQueue(
 
 // периодическая задача
 metrics := &pkg.Envelope{
-    Id:       2,
-    Type:     "metrics",
-    Interval: 3 * time.Second,
-    Deadline: 1 * time.Second,
-    Invoke: func(ctx context.Context) error {
+    id:       2,
+    _type:     "metrics",
+    interval: 3 * time.Second,
+    deadline: 1 * time.Second,
+    invoke: func(ctx context.Context) error {
         fmt.Println("📊 Metrics", time.Now())
         return nil
     },
@@ -73,21 +73,21 @@ metrics := &pkg.Envelope{
 
 // одноразовая задача + per-envelope stamps (внутренние)
 email := &pkg.Envelope{
-    Id:       1,
-    Type:     "email",
-    Interval: 0,
-    Deadline: 2 * time.Second,
-    Invoke: func(ctx context.Context) error {
+    id:       1,
+    _type:     "email",
+    interval: 0,
+    deadline: 2 * time.Second,
+    invoke: func(ctx context.Context) error {
         // уважайте ctx.Done()
         return nil
     },
-    BeforeHook: func(ctx context.Context, e *pkg.Envelope) error {
+    beforeHook: func(ctx context.Context, e *pkg.Envelope) error {
         return nil
     },
-    AfterHook: func(ctx context.Context, e *pkg.Envelope) error {
+    afterHook: func(ctx context.Context, e *pkg.Envelope) error {
         return nil
     },
-    Stamps: []pkg.Stamp{
+    stamps: []pkg.Stamp{
         // свои пер-задачные обёртки (внутренние относительно глобальных)
     },
 }
@@ -107,32 +107,32 @@ q.Stop()
 
 | Сценарий                                                         | Действие очереди                                                                 |
 |------------------------------------------------------------------|----------------------------------------------------------------------------------|
-| `Invoke` вернул `nil`                                            | `Forget`; если `Interval > 0` → `AddAfter(Interval)`                             |
-| Контекст задачи истёк/отменён (`DeadlineExceeded`/`Canceled`)    | `Forget`; если периодическая → `AddAfter(Interval)`                              |
-| `ErrStopEnvelope` (из `BeforeHook`/`Invoke`/`AfterHook`)         | `Forget` + поместить `Type` в **blacklist**                                      |
-| Ошибка в `BeforeHook` (не `ErrStopEnvelope`)                     | Периодические: `AddRateLimited`; одноразовые: `Forget`                           |
-| Ошибка в `Invoke` (не `ErrStopEnvelope`)                         | Периодические: `AddRateLimited`; одноразовые: `Forget`                           |
-| Ошибка в `AfterHook` (не `ErrStopEnvelope`)                      | Возвращается наверх → те же правила, что и для обычной ошибки                   |
+| `invoke` вернул `nil`                                            | `Forget`; если `interval > 0` → `AddAfter(interval)`                             |
+| Контекст задачи истёк/отменён (`DeadlineExceeded`/`Canceled`)    | `Forget`; если периодическая → `AddAfter(interval)`                              |
+| `ErrStopEnvelope` (из `beforeHook`/`invoke`/`afterHook`)         | `Forget` + поместить `_type` в **blacklist**                                      |
+| Ошибка в `beforeHook` (не `ErrStopEnvelope`)                     | Периодические: `AddRateLimited`; одноразовые: `Forget`                           |
+| Ошибка в `invoke` (не `ErrStopEnvelope`)                         | Периодические: `AddRateLimited`; одноразовые: `Forget`                           |
+| Ошибка в `afterHook` (не `ErrStopEnvelope`)                      | Возвращается наверх → те же правила, что и для обычной ошибки                   |
 | Паника внутри обработки элемента                                 | Элемент `Forget+Done`, стек логируется; воркер продолжает работу                 |
 
-> Валидация: для периодических задач `Deadline` **не должен превышать** `Interval` — иначе `ErrAdditionEnvelopeToQueueBadIntervals`.
+> Валидация: для периодических задач `deadline` **не должен превышать** `interval` — иначе `ErrAdditionEnvelopeToQueueBadIntervals`.
 
 ---
 
-## Stamps (middleware)
+## stamps (middleware)
 
-Stamps — это лёгкие обёртки вокруг `Invoker` (обработчика конверта). Их две группы:
+stamps — это лёгкие обёртки вокруг `Invoker` (обработчика конверта). Их две группы:
 
 - **Глобальные stamps** — задаются на очередь через `WithStamps(...)`.
-- **Per‑envelope stamps** — задаются конкретной задачей в `Envelope.Stamps`.
+- **Per‑envelope stamps** — задаются конкретной задачей в `Envelope.stamps`.
 
 Порядок: глобальные идут **первее** и становятся **внешними** (самыми «оборачивающими»), затем per‑envelope — **внутренние**.
 
 ### Встроенные stamps
 
 - `LoggingStamp(l *log.Logger)` — логирует длительность и ошибку обработки конверта.
-- `BeforeAfterStamp(withTimeout)` — исполняет `BeforeHook` и `AfterHook` с отдельными тайм-бюджетами; любые ошибки, кроме `ErrStopEnvelope`, **возвращаются** наверх. Рекомендуемая функция тайм-бюджета:  
-  `WithHookTimeout(ctx, base=Deadline, frac=0.2, min=800ms)` → `max(20% от Deadline, 800ms)`.
+- `BeforeAfterStamp(withTimeout)` — исполняет `beforeHook` и `afterHook` с отдельными тайм-бюджетами; любые ошибки, кроме `ErrStopEnvelope`, **возвращаются** наверх. Рекомендуемая функция тайм-бюджета:  
+  `WithHookTimeout(ctx, base=deadline, frac=0.2, min=800ms)` → `max(20% от deadline, 800ms)`.
 
 > Можно добавлять свои stamps для метрик/трейсинга/ограничения ресурсов.
 
@@ -149,16 +149,16 @@ const (
 )
 
 type Envelope struct {
-    Id       uint64
-    Type     string
-    Interval time.Duration // 0 = одноразовая задача
-    Deadline time.Duration // 0 = без таймаута
+    id       uint64
+    _type     string
+    interval time.Duration // 0 = одноразовая задача
+    deadline time.Duration // 0 = без таймаута
 
-    BeforeHook func(ctx context.Context, envelope *Envelope) error
-    Invoke     func(ctx context.Context) error
-    AfterHook  func(ctx context.Context, envelope *Envelope) error
+    beforeHook func(ctx context.Context, envelope *Envelope) error
+    invoke     func(ctx context.Context) error
+    afterHook  func(ctx context.Context, envelope *Envelope) error
 
-    Stamps []Stamp // per-envelope stamps (внутренние)
+    stamps []Stamp // per-envelope stamps (внутренние)
 }
 
 type QueuePool interface {
@@ -191,11 +191,11 @@ pkg.WithStamps(stamps...)              // глобальные stamps
 
 ### Ошибки
 
-- `ErrStopEnvelope` — поместить `Type` в blacklist.
+- `ErrStopEnvelope` — поместить `_type` в blacklist.
 - `ErrEnvelopeInBlacklist` — попытка добавить envelope с типом из blacklist.
 - `ErrEnvelopeQueueIsNotRunning` — `Add` до `Start`/после `Stop`.
-- `ErrAdditionEnvelopeToQueueBadFields` — неверные поля (`Type`, `Invoke`, `Interval`, `Deadline`).
-- `ErrAdditionEnvelopeToQueueBadIntervals` — `Deadline > Interval` для периодических.
+- `ErrAdditionEnvelopeToQueueBadFields` — неверные поля (`_type`, `invoke`, `interval`, `deadline`).
+- `ErrAdditionEnvelopeToQueueBadIntervals` — `deadline > interval` для периодических.
 
 ---
 
@@ -209,47 +209,47 @@ func Test_Acceptance(t *testing.T) {
     logger := log.New(os.Stdout, "", log.LstdFlags)
 
     email := &pkg.Envelope{
-        Id:       1,
-        Type:     "email",
-        Interval: 5 * time.Second,
-        Deadline: 3 * time.Second,
-        Invoke: func(ctx context.Context) error {
+        id:       1,
+        _type:     "email",
+        interval: 5 * time.Second,
+        deadline: 3 * time.Second,
+        invoke: func(ctx context.Context) error {
             time.Sleep(5 * time.Second) // превысит дедлайн
             fmt.Println("📧 Email v1", time.Now())
             return nil
         },
-        BeforeHook: func(ctx context.Context, e *pkg.Envelope) error {
-            fmt.Println("hook before email", e.Id, time.Now())
+        beforeHook: func(ctx context.Context, e *pkg.Envelope) error {
+            fmt.Println("hook before email", e.id, time.Now())
             return nil
         },
-        AfterHook: func(ctx context.Context, e *pkg.Envelope) error {
-            fmt.Println("hook after email", e.Id, time.Now())
+        afterHook: func(ctx context.Context, e *pkg.Envelope) error {
+            fmt.Println("hook after email", e.id, time.Now())
             // остановим дальнейшие email
             return pkg.ErrStopEnvelope
         },
-        Stamps: []pkg.Stamp{
+        stamps: []pkg.Stamp{
             pkg.LoggingStamp(logger),
             pkg.BeforeAfterStamp(pkg.WithHookTimeout),
         },
     }
 
     metrics := &pkg.Envelope{
-        Id:       2,
-        Type:     "metrics",
-        Interval: 3 * time.Second,
-        Deadline: 1 * time.Second,
-        Invoke: func(ctx context.Context) error {
+        id:       2,
+        _type:     "metrics",
+        interval: 3 * time.Second,
+        deadline: 1 * time.Second,
+        invoke: func(ctx context.Context) error {
             fmt.Println("📊 Metrics", time.Now())
             return nil
         },
     }
 
     food := &pkg.Envelope{
-        Id:       3,
-        Type:     "food",
-        Interval: 2 * time.Second,
-        Deadline: 1 * time.Second,
-        Invoke: func(ctx context.Context) error {
+        id:       3,
+        _type:     "food",
+        interval: 2 * time.Second,
+        deadline: 1 * time.Second,
+        invoke: func(ctx context.Context) error {
             fmt.Println("🍔 Fooding", time.Now())
             return nil
         },
@@ -276,7 +276,7 @@ func Test_Acceptance(t *testing.T) {
 - **Один объект — один запуск**: текущая реализация рассчитана на одноразовый жизненный цикл `Start/Stop`. Для повторного использования создайте **новый объект** очереди.
 - **Дедупликация**: для указателей — по адресу. Не «переиспользуйте» один и тот же указатель для разных логических задач.
 - **Jitter**: чтобы периодические задачи не «стреляли строем», можно добавить случайный сдвиг к `AddAfter`.
-- **Соблюдайте контекст** в `Invoke`/хуках: долгие операции должны уважать `ctx.Done()`; иначе получится «карусель» таймаутов с перепланированием.
+- **Соблюдайте контекст** в `invoke`/хуках: долгие операции должны уважать `ctx.Done()`; иначе получится «карусель» таймаутов с перепланированием.
 
 ---
 

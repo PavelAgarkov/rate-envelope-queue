@@ -3,8 +3,6 @@ package main
 import (
 	"context"
 	"fmt"
-	"log"
-	"os"
 	"testing"
 	"time"
 
@@ -15,41 +13,75 @@ func Test_Acceptance(t *testing.T) {
 	patent, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	logger := log.New(os.Stdout, "", log.LstdFlags)
+	//logger := log.New(os.Stdout, "", log.LstdFlags)
 
-	emailEnvelope := &pkg.Envelope{Id: 1, Interval: 5 * time.Second, Deadline: 3 * time.Second, Type: "email",
-		Invoke: func(ctx context.Context) error {
+	emailEnvelope := pkg.NewEnvelope(
+		pkg.WithId(1),
+		pkg.WithType("email"),
+		pkg.WithInterval(5*time.Second),
+		pkg.WithDeadline(3*time.Second),
+		pkg.WithInvoke(func(ctx context.Context) error {
 			time.Sleep(5 * time.Second)
-			fmt.Println("📧 Email v1", time.Now())
+			fmt.Println("📧 Email v2", time.Now())
 			return nil
-		},
-		BeforeHook: func(ctx context.Context, envelope *pkg.Envelope) error {
-			fmt.Println("hook before email", envelope.Id, time.Now())
+		}),
+		pkg.WithBeforeHook(func(ctx context.Context, envelope *pkg.Envelope) error {
+			fmt.Println("hook before email", envelope.GetId(), time.Now())
 			//return pkg.ErrStopTask
 			return nil
-		},
-		AfterHook: func(ctx context.Context, envelope *pkg.Envelope) error {
-			fmt.Println("hook after email", envelope.Id, time.Now())
+		}),
+		pkg.WithAfterHook(func(ctx context.Context, envelope *pkg.Envelope) error {
+			fmt.Println("hook after email", envelope.GetId(), time.Now())
 			return pkg.ErrStopEnvelope
-		},
-		Stamps: []pkg.Stamp{
-			pkg.LoggingStamp(logger),
-			pkg.BeforeAfterStamp(pkg.WithHookTimeout),
-		},
-	}
+		}),
+	)
+
+	metricsEnvelope := pkg.NewEnvelope(
+		pkg.WithId(2),
+		pkg.WithType("metrics"),
+		pkg.WithInterval(3*time.Second),
+		pkg.WithDeadline(1*time.Second),
+		pkg.WithInvoke(func(ctx context.Context) error {
+			fmt.Println("📧 Metrics", time.Now())
+			return nil
+		}),
+		pkg.WithBeforeHook(func(ctx context.Context, envelope *pkg.Envelope) error {
+			return nil
+		}),
+		pkg.WithInvoke(func(ctx context.Context) error {
+			fmt.Println("📧 Metrics v2", time.Now())
+			return nil
+		}),
+		pkg.WithAfterHook(func(ctx context.Context, envelope *pkg.Envelope) error {
+			return nil
+		}),
+	)
+
+	foodEnvelope := pkg.NewEnvelope(
+		pkg.WithId(3),
+		pkg.WithType("food"),
+		pkg.WithInterval(2*time.Second),
+		pkg.WithDeadline(1*time.Second),
+		pkg.WithInvoke(func(ctx context.Context) error {
+			fmt.Println("📧Fooding", time.Now())
+			return nil
+		}),
+		pkg.WithBeforeHook(func(ctx context.Context, envelope *pkg.Envelope) error {
+			return nil
+		}),
+		pkg.WithInvoke(func(ctx context.Context) error {
+			fmt.Println("📧Fooding v2", time.Now())
+			return nil
+		}),
+		pkg.WithAfterHook(func(ctx context.Context, envelope *pkg.Envelope) error {
+			return nil
+		}),
+	)
 
 	envelops := map[string]*pkg.Envelope{
-		"Email": emailEnvelope,
-		"Metrics": {Id: 2, Interval: 3 * time.Second, Deadline: 1 * time.Second, Type: "metrics",
-			Invoke: func(ctx context.Context) error {
-				fmt.Println("📧 Metrics", time.Now())
-				return nil
-			}},
-		"Food": {Id: 3, Interval: 2 * time.Second, Deadline: 1 * time.Second, Type: "food",
-			Invoke: func(ctx context.Context) error {
-				fmt.Println("📧Fooding", time.Now())
-				return nil
-			}},
+		"Email":   emailEnvelope,
+		"Metrics": metricsEnvelope,
+		"Food":    foodEnvelope,
 	}
 
 	envelopeQueue := pkg.NewRateEnvelopeQueue(
@@ -76,7 +108,6 @@ func Test_Acceptance(t *testing.T) {
 		pkg.WithWaitingOption(true),
 		pkg.WithStopModeOption(pkg.Drain),
 		pkg.WithStamps(
-			pkg.LoggingStamp(logger),
 			pkg.BeforeAfterStamp(pkg.WithHookTimeout),
 		),
 	)
@@ -98,6 +129,5 @@ func Test_Acceptance(t *testing.T) {
 	<-patent.Done()
 	fmt.Println("parent: done")
 	envelopeQueue.Stop()
-	//time.Sleep(5 * time.Second)
 	fmt.Println("queue: done")
 }
