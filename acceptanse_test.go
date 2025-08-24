@@ -2,6 +2,7 @@ package rate_envelope_queue
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/signal"
@@ -23,11 +24,30 @@ func Test_Acceptance(t *testing.T) {
 		cancel()
 	}()
 
-	//logger := log.New(os.Stdout, "", log.LstdFlags)
-
 	emailEnvelope := NewEnvelope(
 		WithId(1),
-		WithType("email"),
+		WithType("email_1"),
+		WithInterval(5*time.Second),
+		WithDeadline(3*time.Second),
+		WithInvoke(func(ctx context.Context) error {
+			time.Sleep(5 * time.Second)
+			fmt.Println("📧 Email v1", time.Now())
+			return nil
+		}),
+		WithBeforeHook(func(ctx context.Context, envelope *Envelope) error {
+			fmt.Println("hook before email 1 ", envelope.GetId(), time.Now())
+			//return ErrStopTask
+			return nil
+		}),
+		WithAfterHook(func(ctx context.Context, envelope *Envelope) error {
+			fmt.Println("hook after email 1 ", envelope.GetId(), time.Now())
+			return ErrStopEnvelope
+		}),
+	)
+
+	emailEnvelope1 := NewEnvelope(
+		WithId(1),
+		WithType("email_2"),
 		WithInterval(5*time.Second),
 		WithDeadline(3*time.Second),
 		WithInvoke(func(ctx context.Context) error {
@@ -36,12 +56,12 @@ func Test_Acceptance(t *testing.T) {
 			return nil
 		}),
 		WithBeforeHook(func(ctx context.Context, envelope *Envelope) error {
-			fmt.Println("hook before email", envelope.GetId(), time.Now())
+			fmt.Println("hook before email 2", envelope.GetId(), time.Now())
 			//return ErrStopTask
 			return nil
 		}),
 		WithAfterHook(func(ctx context.Context, envelope *Envelope) error {
-			fmt.Println("hook after email", envelope.GetId(), time.Now())
+			fmt.Println("hook after email 2", envelope.GetId(), time.Now())
 			return ErrStopEnvelope
 		}),
 	)
@@ -51,10 +71,6 @@ func Test_Acceptance(t *testing.T) {
 		WithType("metrics"),
 		WithInterval(3*time.Second),
 		WithDeadline(1*time.Second),
-		WithInvoke(func(ctx context.Context) error {
-			fmt.Println("📧 Metrics", time.Now())
-			return nil
-		}),
 		WithBeforeHook(func(ctx context.Context, envelope *Envelope) error {
 			return nil
 		}),
@@ -67,15 +83,45 @@ func Test_Acceptance(t *testing.T) {
 		}),
 	)
 
+	metricsEnvelope1 := NewEnvelope(
+		WithId(2),
+		WithType("metrics_1"),
+		WithInterval(0),
+		WithDeadline(1*time.Second),
+		WithBeforeHook(func(ctx context.Context, envelope *Envelope) error {
+			return nil
+		}),
+		WithInvoke(func(ctx context.Context) error {
+			fmt.Println("📧 Metrics v1", time.Now())
+			return nil
+		}),
+		WithAfterHook(func(ctx context.Context, envelope *Envelope) error {
+			return nil
+		}),
+	)
+
+	metricsEnvelope3 := NewEnvelope(
+		WithId(2),
+		WithType("metrics_3"),
+		WithInterval(0),
+		WithDeadline(1*time.Second),
+		WithBeforeHook(func(ctx context.Context, envelope *Envelope) error {
+			return nil
+		}),
+		WithInvoke(func(ctx context.Context) error {
+			fmt.Println("📧 Metrics v3", time.Now())
+			return errors.New("some error")
+		}),
+		WithAfterHook(func(ctx context.Context, envelope *Envelope) error {
+			return nil
+		}),
+	)
+
 	foodEnvelope := NewEnvelope(
 		WithId(3),
 		WithType("food"),
 		WithInterval(2*time.Second),
 		WithDeadline(1*time.Second),
-		WithInvoke(func(ctx context.Context) error {
-			fmt.Println("📧Fooding", time.Now())
-			return nil
-		}),
 		WithBeforeHook(func(ctx context.Context, envelope *Envelope) error {
 			return nil
 		}),
@@ -94,27 +140,27 @@ func Test_Acceptance(t *testing.T) {
 		"Food":    foodEnvelope,
 	}
 
+	//envelopeQueue := NewRateEnvelopeQueue(
+	//	WithLimitOption(3),
+	//	WithWaitingOption(true),
+	//	WithStopModeOption(Drain),
+	//	//WithStamps(
+	//	//	LoggingStamp(logger),
+	//	//	BeforeAfterStamp(WithHookTimeout),
+	//	//),
+	//)
+
+	//envelopeQueue.Start(patent)
+	//err := envelopeQueue.Add(envelops["Email"], envelops["Metrics"], envelops["Food"], emailEnvelope, emailEnvelope1)
+	//if err != nil {
+	//	fmt.Println("add err:", err)
+	//}
+	//
+	//time.Sleep(1 * time.Second)
+	//envelopeQueue.Stop()
+
 	envelopeQueue := NewRateEnvelopeQueue(
-		WithLimitOption(3),
-		WithWaitingOption(true),
-		WithStopModeOption(Drain),
-		//WithStamps(
-		//	LoggingStamp(logger),
-		//	BeforeAfterStamp(WithHookTimeout),
-		//),
-	)
-
-	envelopeQueue.Start(patent)
-	err := envelopeQueue.Add(envelops["Email"], envelops["Metrics"], envelops["Food"], emailEnvelope)
-	if err != nil {
-		fmt.Println("add err:", err)
-	}
-
-	time.Sleep(1 * time.Second)
-	envelopeQueue.Stop()
-
-	envelopeQueue = NewRateEnvelopeQueue(
-		WithLimitOption(3),
+		WithLimitOption(5),
 		WithWaitingOption(true),
 		WithStopModeOption(Drain),
 		WithStamps(
@@ -123,7 +169,7 @@ func Test_Acceptance(t *testing.T) {
 	)
 
 	envelopeQueue.Start(patent)
-	err = envelopeQueue.Add(envelops["Email"], envelops["Metrics"], envelops["Food"])
+	err := envelopeQueue.Add(envelops["Email"], envelops["Metrics"], envelops["Food"], emailEnvelope, emailEnvelope1, metricsEnvelope1, metricsEnvelope3)
 	if err != nil {
 		fmt.Println("add err:", err)
 	}
