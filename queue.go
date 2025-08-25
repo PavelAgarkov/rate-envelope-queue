@@ -13,6 +13,16 @@ import (
 	"k8s.io/client-go/util/workqueue"
 )
 
+// внутренний автомат состояний
+type queueState int32
+
+const (
+	stateInit     queueState = iota // создана, ещё не стартовала; Add() — буферизуется
+	stateRunning                    // работает; Add() — сразу в workqueue
+	stateStopping                   // идёт останов; Add() — ошибка
+	stateStopped                    // остановлена; Add() — ошибка; возможен повторный Start()
+)
+
 type RateEnvelopeQueue struct {
 	ctx context.Context
 
@@ -24,13 +34,21 @@ type RateEnvelopeQueue struct {
 	waiting bool
 	wg      sync.WaitGroup
 
-	run      atomic.Bool
 	stopMode StopMode
 
-	blackListMu sync.RWMutex
-	blacklist   map[string]struct{}
+	run   atomic.Bool // быстрый флаг «жива ли очередь» для воркеров при перепланировании
+	state queueState
+
+	// защита старт/стоп/смена очереди/смена состояния
+	lifecycleMu sync.Mutex
+	// защита только чтения состояния
+	stateMu sync.RWMutex
 
 	queueStamps []Stamp // глобальные stamps очереди
+
+	// Буфер задач, добавленных до первого Start()
+	pendingMu sync.Mutex
+	pending   []*Envelope
 }
 
 func chain(base Invoker, stamps ...Stamp) Invoker {
@@ -41,37 +59,41 @@ func chain(base Invoker, stamps ...Stamp) Invoker {
 	return w
 }
 
-func (rateQueue *RateEnvelopeQueue) buildInvokerChain(e *Envelope) Invoker {
-	base := func(ctx context.Context, env *Envelope) error {
-		return env.invoke(ctx)
-	}
-	// порядок: сначала глобальные, потом пер-задачные
-	inv := chain(base, append(rateQueue.queueStamps, e.stamps...)...)
-	return inv
+func (q *RateEnvelopeQueue) buildInvokerChain(e *Envelope) Invoker {
+	base := func(ctx context.Context, env *Envelope) error { return env.invoke(ctx) }
+	return chain(base, append(q.queueStamps, e.stamps...)...)
 }
 
-func (rateQueue *RateEnvelopeQueue) worker(ctx context.Context) {
-	if rateQueue.waiting {
-		defer rateQueue.wg.Done()
+func (q *RateEnvelopeQueue) currentState() queueState {
+	q.stateMu.RLock()
+	s := q.state
+	q.stateMu.RUnlock()
+	return s
+}
+
+func (q *RateEnvelopeQueue) setState(s queueState) {
+	q.stateMu.Lock()
+	q.state = s
+	q.stateMu.Unlock()
+}
+
+func (q *RateEnvelopeQueue) worker(ctx context.Context) {
+	if q.waiting {
+		defer q.wg.Done()
 	}
 	for {
-		envelope, shutdown := rateQueue.queue.Get()
+		envelope, shutdown := q.queue.Get()
 		if shutdown {
 			log.Printf(service + ": worker is shutting down")
 			return
 		}
 
-		if rateQueue.checkInBlacklist(envelope._type) {
-			rateQueue.queue.Forget(envelope)
-			rateQueue.queue.Done(envelope)
-			continue
-		}
-
 		err := func(envelope *Envelope) error {
-			defer rateQueue.queue.Done(envelope)
+			defer q.queue.Done(envelope)
 			defer func() {
 				if r := recover(); r != nil {
-					rateQueue.queue.Forget(envelope)
+					// важен порядок: Forget до выхода (Done отработает после этого defer)
+					q.queue.Forget(envelope)
 					log.Printf(service+": panic recovered in envelope: %v\n%s", r, debug.Stack())
 				}
 			}()
@@ -83,37 +105,36 @@ func (rateQueue *RateEnvelopeQueue) worker(ctx context.Context) {
 			}
 			defer tcancel()
 
-			invokerChain := rateQueue.buildInvokerChain(envelope)
-			err := invokerChain(tctx, envelope)
+			invoker := q.buildInvokerChain(envelope)
+			err := invoker(tctx, envelope)
 
 			if err == nil && tctx.Err() != nil {
 				err = tctx.Err()
 			}
 
-			alive := rateQueue.run.Load() && rateQueue.ctx != nil && rateQueue.ctx.Err() == nil
+			alive := q.run.Load() && q.ctx != nil && q.ctx.Err() == nil && q.currentState() == stateRunning
 
 			switch {
 			case errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded):
-				rateQueue.queue.Forget(envelope)
+				q.queue.Forget(envelope)
 				if envelope.interval > 0 && alive {
-					rateQueue.queue.AddAfter(envelope, envelope.interval)
+					q.queue.AddAfter(envelope, envelope.interval)
 				}
 				return nil
 			case errors.Is(err, ErrStopEnvelope):
-				rateQueue.queue.Forget(envelope)
-				rateQueue.setToBlacklist(envelope._type)
+				q.queue.Forget(envelope)
 				return nil
 			case err != nil:
 				if envelope.interval > 0 && alive {
-					rateQueue.queue.AddRateLimited(envelope)
+					q.queue.AddRateLimited(envelope)
 				} else {
-					rateQueue.queue.Forget(envelope)
+					q.queue.Forget(envelope)
 				}
 				return nil
 			default:
-				rateQueue.queue.Forget(envelope)
+				q.queue.Forget(envelope)
 				if envelope.interval > 0 && alive {
-					rateQueue.queue.AddAfter(envelope, envelope.interval)
+					q.queue.AddAfter(envelope, envelope.interval)
 				}
 				return nil
 			}
@@ -129,156 +150,142 @@ func NewRateEnvelopeQueue(ctx context.Context, options ...func(*RateEnvelopeQueu
 	if ctx == nil {
 		ctx = context.Background()
 	}
-
-	queue := &RateEnvelopeQueue{
-		waiting:   true,
-		blacklist: make(map[string]struct{}),
-		ctx:       ctx,
+	q := &RateEnvelopeQueue{
+		ctx:     ctx,
+		waiting: true,
+		state:   stateInit,
 	}
-	for _, option := range options {
-		option(queue)
+	for _, o := range options {
+		o(q)
 	}
 
-	if queue.limiter == nil {
-		queue.limiter = workqueue.NewTypedMaxOfRateLimiter[*Envelope](
+	if q.limiter == nil {
+		q.limiter = workqueue.NewTypedMaxOfRateLimiter[*Envelope](
 			workqueue.NewTypedItemExponentialFailureRateLimiter[*Envelope](1*time.Second, 30*time.Second),
 			&workqueue.TypedBucketRateLimiter[*Envelope]{Limiter: rate.NewLimiter(5, 10)},
 		)
 	}
-
-	if queue.limit <= 0 {
+	if q.limit <= 0 {
 		panic(service + ": limit must be greater than 0")
 	}
-
-	if queue.stopMode == "" {
+	if q.stopMode == "" {
 		panic(service + ": stopMode must be set")
 	}
+	// в init очередь ещё не «живая»
+	q.run.Store(false)
 
-	queue.run.Store(true)
-
-	return queue
+	return q
 }
 
-func (rateQueue *RateEnvelopeQueue) setToBlacklist(types ...string) {
-	rateQueue.blackListMu.Lock()
-	defer rateQueue.blackListMu.Unlock()
-	for _, t := range types {
-		rateQueue.blacklist[t] = struct{}{}
-	}
-}
-
-func (rateQueue *RateEnvelopeQueue) removeFromBlacklist(types ...string) {
-	rateQueue.blackListMu.Lock()
-	defer rateQueue.blackListMu.Unlock()
-	for _, t := range types {
-		delete(rateQueue.blacklist, t)
-	}
-}
-
-func (rateQueue *RateEnvelopeQueue) checkInBlacklist(t string) bool {
-	rateQueue.blackListMu.RLock()
-	defer rateQueue.blackListMu.RUnlock()
-	_, exists := rateQueue.blacklist[t]
-	return exists
-}
-
-func (rateQueue *RateEnvelopeQueue) Add(envelopes ...*Envelope) error {
-	if err := rateQueue.validateAdd(envelopes...); err != nil {
-		return err
-	}
-
-	for _, envelope := range envelopes {
-		rateQueue.queue.Add(envelope)
-	}
-
-	return nil
-}
-
-func (rateQueue *RateEnvelopeQueue) validateAdd(envelopes ...*Envelope) error {
-	if !rateQueue.run.Load() || rateQueue.queue == nil {
-		return ErrEnvelopeQueueIsNotRunning
-	}
-
-	for _, envelope := range envelopes {
-		if envelope == nil {
+func (q *RateEnvelopeQueue) Add(envelopes ...*Envelope) error {
+	// валидация содержимого (не состояния)
+	for _, e := range envelopes {
+		if e == nil {
 			return ErrAdditionEnvelopeToQueueBadFields
 		}
-		if envelope._type == "" || envelope.invoke == nil || envelope.interval < 0 || envelope.deadline < 0 {
+		if e._type == "" || e.invoke == nil || e.interval < 0 || e.deadline < 0 {
 			return ErrAdditionEnvelopeToQueueBadFields
 		}
-		if envelope.interval > 0 && envelope.deadline > envelope.interval {
+		if e.interval > 0 && e.deadline > e.interval {
 			return ErrAdditionEnvelopeToQueueBadIntervals
 		}
-		if rateQueue.checkInBlacklist(envelope._type) {
-			return ErrEnvelopeInBlacklist
-		}
 	}
 
-	return nil
+	switch q.currentState() {
+	case stateInit:
+		q.pendingMu.Lock()
+		q.pending = append(q.pending, envelopes...)
+		q.pendingMu.Unlock()
+		return nil
+	case stateRunning:
+		for _, e := range envelopes {
+			q.queue.Add(e)
+		}
+		return nil
+	default:
+		return ErrEnvelopeQueueIsNotRunning
+	}
 }
 
-func (rateQueue *RateEnvelopeQueue) Start() {
-	if !rateQueue.run.Load() || rateQueue.queue != nil {
-		log.Printf(service + ": queue is not in a startable state")
+func (q *RateEnvelopeQueue) Start() {
+	q.lifecycleMu.Lock()
+	defer q.lifecycleMu.Unlock()
+
+	switch q.state {
+	case stateRunning:
+		return
+	case stateStopping:
+		log.Printf(service + ": queue is stopping; Start skipped")
 		return
 	}
 
-	switch rateQueue.workqueueConf {
-	case nil:
-		rateQueue.queue = workqueue.NewTypedRateLimitingQueue[*Envelope](rateQueue.limiter)
-	default:
-		rateQueue.queue = workqueue.NewTypedRateLimitingQueueWithConfig[*Envelope](
-			rateQueue.limiter,
-			*rateQueue.workqueueConf,
+	// recreate workqueue
+	if q.workqueueConf == nil {
+		q.queue = workqueue.NewTypedRateLimitingQueue[*Envelope](q.limiter)
+	} else {
+		q.queue = workqueue.NewTypedRateLimitingQueueWithConfig[*Envelope](
+			q.limiter,
+			*q.workqueueConf,
 		)
 	}
 
-	for range rateQueue.limit {
-		if rateQueue.waiting {
-			rateQueue.wg.Add(1)
+	// переключаем состояние и run-флаг
+	q.setState(stateRunning)
+	q.run.Store(true)
+
+	// запустить воркеры
+	for i := 0; i < q.limit; i++ {
+		if q.waiting {
+			q.wg.Add(1)
 		}
 		go func() {
 			defer recoverWrap()
-			rateQueue.worker(rateQueue.ctx)
+			q.worker(q.ctx)
 		}()
 	}
+
+	// слить pending
+	q.pendingMu.Lock()
+	if len(q.pending) > 0 {
+		for _, e := range q.pending {
+			q.queue.Add(e)
+		}
+		q.pending = nil
+	}
+	q.pendingMu.Unlock()
 }
 
-func (rateQueue *RateEnvelopeQueue) drain() {
-	if !rateQueue.run.Load() || rateQueue.queue == nil {
-		log.Printf(service + ": queue is already stopped")
+func (q *RateEnvelopeQueue) Stop() {
+	q.lifecycleMu.Lock()
+	if q.state != stateRunning {
+		q.lifecycleMu.Unlock()
 		return
 	}
-	rateQueue.queue.ShutDownWithDrain()
-	if rateQueue.waiting {
-		rateQueue.wg.Wait()
-	}
-	rateQueue.run.Store(false)
-	log.Printf(service + ": queue is drained")
-}
+	q.setState(stateStopping)
+	q.run.Store(false) // запрещаем перепланирование
+	q.lifecycleMu.Unlock()
 
-func (rateQueue *RateEnvelopeQueue) stop() {
-	if !rateQueue.run.Load() || rateQueue.queue == nil {
-		log.Printf(service + " queue is already stopped")
-		return
-	}
-	rateQueue.queue.ShutDown()
-	if rateQueue.waiting {
-		rateQueue.wg.Wait()
-	}
-	rateQueue.run.Store(false)
-	log.Printf(service + " queue is stopped")
-}
-
-func (rateQueue *RateEnvelopeQueue) Stop() {
-	switch rateQueue.stopMode {
+	switch q.stopMode {
 	case Drain:
-		rateQueue.drain()
-		return
-	case Stop:
-		rateQueue.stop()
-		return
+		if q.queue != nil {
+			q.queue.ShutDownWithDrain()
+		}
+	default:
+		if q.queue != nil {
+			q.queue.ShutDown()
+		}
 	}
+
+	if q.waiting {
+		q.wg.Wait()
+	}
+
+	q.lifecycleMu.Lock()
+	q.setState(stateStopped)
+	q.queue = nil
+	q.lifecycleMu.Unlock()
+
+	log.Printf(service + ": queue is drained/stopped")
 }
 
 func recoverWrap() {
@@ -288,38 +295,34 @@ func recoverWrap() {
 }
 
 func WithLimitOption(limit int) func(*RateEnvelopeQueue) {
-	return func(queue *RateEnvelopeQueue) {
-		queue.limit = limit
-	}
+	return func(q *RateEnvelopeQueue) { q.limit = limit }
 }
 
 func WithWaitingOption(waiting bool) func(*RateEnvelopeQueue) {
-	return func(queue *RateEnvelopeQueue) {
-		queue.waiting = waiting
-	}
+	return func(q *RateEnvelopeQueue) { q.waiting = waiting }
 }
 
-func WithStopModeOption(stopMode StopMode) func(*RateEnvelopeQueue) {
-	return func(queue *RateEnvelopeQueue) {
-		if stopMode != Drain && stopMode != Stop {
+func WithStopModeOption(mode StopMode) func(*RateEnvelopeQueue) {
+	return func(q *RateEnvelopeQueue) {
+		if mode != Drain && mode != Stop {
 			panic("invalid stop mode")
 		}
-		queue.stopMode = stopMode
+		q.stopMode = mode
 	}
 }
 
 func WithWorkqueueConfigOption(conf *workqueue.TypedRateLimitingQueueConfig[*Envelope]) func(*RateEnvelopeQueue) {
-	return func(queue *RateEnvelopeQueue) {
+	return func(q *RateEnvelopeQueue) {
 		if conf != nil {
-			queue.workqueueConf = conf
+			q.workqueueConf = conf
 		}
 	}
 }
 
 func WithLimiterOption(limiter workqueue.TypedRateLimiter[*Envelope]) func(*RateEnvelopeQueue) {
-	return func(queue *RateEnvelopeQueue) {
+	return func(q *RateEnvelopeQueue) {
 		if limiter != nil {
-			queue.limiter = limiter
+			q.limiter = limiter
 		}
 	}
 }

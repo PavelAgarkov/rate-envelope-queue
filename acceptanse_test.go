@@ -140,19 +140,18 @@ func Test_Acceptance(t *testing.T) {
 		"Food":    foodEnvelope,
 	}
 
-	var envelopeQueue QueuePool
-	start := func() {
-		envelopeQueue = NewRateEnvelopeQueue(
-			parent,
-			WithLimitOption(5),
-			WithWaitingOption(true),
-			WithStopModeOption(Drain),
-			WithStamps(
-				BeforeAfterStamp(WithHookTimeout),
-			),
-		)
-		envelopeQueue.Start()
+	envelopeQueue := NewRateEnvelopeQueue(
+		parent,
+		WithLimitOption(5),
+		WithWaitingOption(true),
+		WithStopModeOption(Drain),
+		WithStamps(
+			BeforeAfterStamp(WithHookTimeout),
+		),
+	)
 
+	start := func() {
+		envelopeQueue.Start()
 		err := envelopeQueue.Add(envelops["Email"], envelops["Metrics"], envelops["Food"], emailEnvelope, emailEnvelope1, metricsEnvelope1, metricsEnvelope3)
 		if err != nil {
 			fmt.Println("add err:", err)
