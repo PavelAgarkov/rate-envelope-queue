@@ -27,6 +27,7 @@ type RateEnvelopeQueue struct {
 	ctx context.Context
 
 	limit         int
+	queueMu       sync.RWMutex
 	queue         workqueue.TypedRateLimitingInterface[*Envelope]
 	limiter       workqueue.TypedRateLimiter[*Envelope]
 	workqueueConf *workqueue.TypedRateLimitingQueueConfig[*Envelope]
@@ -83,13 +84,15 @@ func (q *RateEnvelopeQueue) worker(ctx context.Context) {
 	if q.waiting {
 		defer q.wg.Done()
 	}
-	for {
-		queue := q.queue
-		if queue == nil {
-			log.Printf(service + ": worker: queue is nil; exiting")
-			return
-		}
+	q.queueMu.RLock()
+	queue := q.queue
+	q.queueMu.RUnlock()
+	if queue == nil {
+		log.Printf(service + ": worker: queue is nil; exiting")
+		return
+	}
 
+	for {
 		envelope, shutdown := queue.Get()
 		if shutdown {
 			log.Printf(service + ": worker is shutting down")
@@ -221,12 +224,9 @@ func (q *RateEnvelopeQueue) worker(ctx context.Context) {
 	}
 }
 
-func NewRateEnvelopeQueue(ctx context.Context, options ...func(*RateEnvelopeQueue)) QueuePool {
-	if ctx == nil {
-		ctx = context.Background()
-	}
+func NewRateEnvelopeQueue(base context.Context, options ...func(*RateEnvelopeQueue)) QueuePool {
 	q := &RateEnvelopeQueue{
-		ctx:     ctx,
+		ctx:     base,
 		waiting: true,
 		state:   stateInit,
 	}
@@ -273,8 +273,14 @@ func (q *RateEnvelopeQueue) Add(envelopes ...*Envelope) error {
 		q.pendingMu.Unlock()
 		return nil
 	case stateRunning:
+		q.queueMu.RLock()
+		local := q.queue
+		q.queueMu.RUnlock()
+		if local == nil {
+			return ErrEnvelopeQueueIsNotRunning
+		}
 		for _, e := range envelopes {
-			q.queue.Add(e)
+			local.Add(e)
 		}
 		return nil
 	default:
@@ -295,14 +301,16 @@ func (q *RateEnvelopeQueue) Start() {
 	}
 
 	// recreate workqueue
+	var newQ workqueue.TypedRateLimitingInterface[*Envelope]
 	if q.workqueueConf == nil {
-		q.queue = workqueue.NewTypedRateLimitingQueue[*Envelope](q.limiter)
+		newQ = workqueue.NewTypedRateLimitingQueue[*Envelope](q.limiter)
 	} else {
-		q.queue = workqueue.NewTypedRateLimitingQueueWithConfig[*Envelope](
-			q.limiter,
-			*q.workqueueConf,
-		)
+		newQ = workqueue.NewTypedRateLimitingQueueWithConfig[*Envelope](q.limiter, *q.workqueueConf)
 	}
+
+	q.queueMu.Lock()
+	q.queue = newQ
+	q.queueMu.Unlock()
 
 	// переключаем состояние и run-флаг
 	q.setState(stateRunning)
@@ -322,8 +330,11 @@ func (q *RateEnvelopeQueue) Start() {
 	// слить pending
 	q.pendingMu.Lock()
 	if len(q.pending) > 0 {
+		q.queueMu.RLock()
+		local := q.queue
+		q.queueMu.RUnlock()
 		for _, e := range q.pending {
-			q.queue.Add(e)
+			local.Add(e)
 		}
 		q.pending = nil
 	}
@@ -331,36 +342,43 @@ func (q *RateEnvelopeQueue) Start() {
 }
 
 func (q *RateEnvelopeQueue) Stop() {
+	// Переводим состояние
 	q.lifecycleMu.Lock()
 	if q.state != stateRunning {
 		q.lifecycleMu.Unlock()
 		return
 	}
 	q.setState(stateStopping)
-	q.run.Store(false) // запрещаем перепланирование
-	localQueue := q.queue
+	q.run.Store(false)
 	q.lifecycleMu.Unlock()
 
-	// Корректно останавливаем текущую очередь
-	if localQueue != nil {
+	// Берём локальную ссылку, НЕ обнуляя публикацию пока идёт drain
+	q.queueMu.RLock()
+	local := q.queue
+	q.queueMu.RUnlock()
+
+	// Останавливаем старую очередь
+	if local != nil {
 		switch q.stopMode {
 		case Drain:
-			localQueue.ShutDownWithDrain()
+			local.ShutDownWithDrain()
 		default:
-			localQueue.ShutDown()
+			local.ShutDown()
 		}
 	}
 
-	// Ждём воркеров, если нужно
 	if q.waiting {
 		q.wg.Wait()
 	}
 
-	// Финальная фиксация состояния и обнуление ссылки на очередь
+	// Теперь можно финализировать состояние и обнулить публикуемую ссылку
 	q.lifecycleMu.Lock()
 	q.setState(stateStopped)
-	q.queue = nil
 	q.lifecycleMu.Unlock()
+
+	q.queueMu.Lock()
+	q.queue = nil
+	q.queueMu.Unlock()
 
 	log.Printf(service + ": queue is drained/stopped")
 }

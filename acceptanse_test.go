@@ -155,6 +155,7 @@ func Test_Acceptance(t *testing.T) {
 	envelopeQueue := NewRateEnvelopeQueue(
 		parent,
 		WithLimitOption(5),
+		// проще не использовать этот парамет вовсе
 		WithWaitingOption(true),
 		WithStopModeOption(Drain),
 	)
