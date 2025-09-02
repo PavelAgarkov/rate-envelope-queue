@@ -27,21 +27,33 @@ func Test_Acceptance(t *testing.T) {
 	emailEnvelope := NewEnvelope(
 		WithId(1),
 		WithType("email_1"),
-		WithInterval(5*time.Second),
-		WithDeadline(3*time.Second),
-		WithInvoke(func(ctx context.Context) error {
-			time.Sleep(5 * time.Second)
-			fmt.Println("📧 Email v1", time.Now())
-			return nil
-		}),
+		//WithInterval(6*time.Second),
+		WithDeadline(5*time.Second),
 		WithBeforeHook(func(ctx context.Context, envelope *Envelope) error {
 			fmt.Println("hook before email 1 ", envelope.GetId(), time.Now())
 			//return ErrStopTask
 			return nil
 		}),
+		WithInvoke(func(ctx context.Context, envelope *Envelope) error {
+			time.Sleep(5 * time.Second)
+			fmt.Println("📧 Email v1", time.Now())
+			return nil
+		}),
 		WithAfterHook(func(ctx context.Context, envelope *Envelope) error {
 			fmt.Println("hook after email 1 ", envelope.GetId(), time.Now())
-			return ErrStopEnvelope
+			//return ErrStopEnvelope
+			//return nil
+			return fmt.Errorf("some error after")
+		}),
+		WithFailureHook(func(ctx context.Context, envelope *Envelope, err error) Decision {
+			fmt.Println("failure hook email 1", envelope.GetId(), time.Now(), err)
+			//return NewDefaultDestination()
+			//return NewRetryNowDestination()
+			return NewRetryAfterDestination(time.Second * 5)
+			//return nil
+		}),
+		WithSuccessHook(func(ctx context.Context, envelope *Envelope) {
+			fmt.Println("success hook email 1", envelope.GetId(), time.Now())
 		}),
 	)
 
@@ -50,7 +62,7 @@ func Test_Acceptance(t *testing.T) {
 		WithType("email_2"),
 		WithInterval(5*time.Second),
 		WithDeadline(3*time.Second),
-		WithInvoke(func(ctx context.Context) error {
+		WithInvoke(func(ctx context.Context, envelope *Envelope) error {
 			time.Sleep(5 * time.Second)
 			fmt.Println("📧 Email v2", time.Now())
 			return nil
@@ -74,7 +86,7 @@ func Test_Acceptance(t *testing.T) {
 		WithBeforeHook(func(ctx context.Context, envelope *Envelope) error {
 			return nil
 		}),
-		WithInvoke(func(ctx context.Context) error {
+		WithInvoke(func(ctx context.Context, envelope *Envelope) error {
 			fmt.Println("📧 Metrics v2", time.Now())
 			return nil
 		}),
@@ -91,7 +103,7 @@ func Test_Acceptance(t *testing.T) {
 		WithBeforeHook(func(ctx context.Context, envelope *Envelope) error {
 			return nil
 		}),
-		WithInvoke(func(ctx context.Context) error {
+		WithInvoke(func(ctx context.Context, envelope *Envelope) error {
 			fmt.Println("📧 Metrics v1", time.Now())
 			return nil
 		}),
@@ -108,7 +120,7 @@ func Test_Acceptance(t *testing.T) {
 		WithBeforeHook(func(ctx context.Context, envelope *Envelope) error {
 			return nil
 		}),
-		WithInvoke(func(ctx context.Context) error {
+		WithInvoke(func(ctx context.Context, envelope *Envelope) error {
 			fmt.Println("📧 Metrics v3", time.Now())
 			return errors.New("some error")
 		}),
@@ -125,7 +137,7 @@ func Test_Acceptance(t *testing.T) {
 		WithBeforeHook(func(ctx context.Context, envelope *Envelope) error {
 			return nil
 		}),
-		WithInvoke(func(ctx context.Context) error {
+		WithInvoke(func(ctx context.Context, envelope *Envelope) error {
 			fmt.Println("📧Fooding v2", time.Now())
 			return nil
 		}),
@@ -150,6 +162,7 @@ func Test_Acceptance(t *testing.T) {
 	start := func() {
 		envelopeQueue.Start()
 		err := envelopeQueue.Add(envelops["Email"], envelops["Metrics"], envelops["Food"], emailEnvelope, emailEnvelope1, metricsEnvelope1, metricsEnvelope3)
+		//err := envelopeQueue.Add(envelops["Email"])
 		if err != nil {
 			fmt.Println("add err:", err)
 		}

@@ -60,7 +60,9 @@ func chain(base Invoker, stamps ...Stamp) Invoker {
 }
 
 func (q *RateEnvelopeQueue) buildInvokerChain(e *Envelope) Invoker {
-	base := func(ctx context.Context, env *Envelope) error { return env.invoke(ctx) }
+	base := func(ctx context.Context, env *Envelope) error {
+		return env.invoke(ctx, e)
+	}
 	return chain(base, append(q.queueStamps, e.stamps...)...)
 }
 
@@ -128,26 +130,79 @@ func (q *RateEnvelopeQueue) worker(ctx context.Context) {
 			alive := q.run.Load() && q.ctx != nil && q.ctx.Err() == nil && q.currentState() == stateRunning
 
 			switch {
+			// отмена/таймаут — забыть и, если периодическая и очередь жива, перепланировать
 			case errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded):
 				q.queue.Forget(envelope)
 				if envelope.interval > 0 && alive {
 					q.queue.AddAfter(envelope, envelope.interval)
 				}
 				return nil
+
+			// ErrStopEnvelope — забыть и не перепланировать. Ошибка от пользователя о том, что задача больше не нужна
 			case errors.Is(err, ErrStopEnvelope):
 				q.queue.Forget(envelope)
 				return nil
+
+			// любая другая ошибка — перепланировать (если периодическая и очередь жива) и, если одиночная, вызвать failureHook (если есть) и реагировать
+			//на ответ пользователя через DestinationResult
 			case err != nil:
 				if envelope.interval > 0 && alive {
-					q.queue.AddRateLimited(envelope)
-				} else {
-					q.queue.Forget(envelope)
+					q.queue.AddAfter(envelope, envelope.interval)
+				}
+
+				// одиночная задача с ошибкой — срабатывает failureHook (если есть) и забывается
+				if envelope.interval == 0 {
+					if envelope.failureHook != nil {
+						// на этот хук даем общее время дедлайна, важная часть. Нужно дать возомжность отправить
+						//ошибку в сторонний сервис. Снаружи пользователь управляет временем через deadline
+						decision := envelope.failureHook(tctx, envelope, err)
+
+						if decision == nil {
+							decision = NewDefaultDestination()
+						}
+
+						payload := decision.Payload()
+						t, ok := payload[DestinationStateField]
+						if !ok {
+							payload[DestinationStateField] = DestinationStateDrop
+						}
+
+						switch t {
+						case DestinationStateRetryNow:
+							q.queue.Add(envelope)
+						case DestinationStataRetryAfter:
+							delay, ok := payload[PayloadAfterField]
+							if !ok {
+								log.Printf(service + ": envelope failureHook did not return after field; using 30s, please customize field")
+								delay = 30 * time.Second
+							}
+
+							delayInterval, assert := delay.(time.Duration)
+							if !assert {
+								log.Printf(service + ": envelope failureHook returned invalid after field; using 30s, please customize field")
+								delayInterval = 30 * time.Second
+							}
+
+							if delayInterval > 0 {
+								q.queue.AddAfter(envelope, delayInterval)
+							}
+						case DestinationStateDrop:
+						}
+
+						q.queue.Forget(envelope)
+					}
 				}
 				return nil
+
 			default:
 				q.queue.Forget(envelope)
 				if envelope.interval > 0 && alive {
 					q.queue.AddAfter(envelope, envelope.interval)
+				}
+				if envelope.successHook != nil {
+					hctx, cancel := WithHookTimeout(ctx, envelope.deadline, 0.5, 800*time.Millisecond)
+					envelope.successHook(hctx, envelope)
+					cancel()
 				}
 				return nil
 			}
