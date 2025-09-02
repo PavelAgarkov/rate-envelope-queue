@@ -27,7 +27,7 @@ const (
 )
 
 type QueuePool interface {
-	Add(envelopes ...*Envelope) error
+	Send(envelopes ...*Envelope) error
 	Start()
 	Stop()
 }

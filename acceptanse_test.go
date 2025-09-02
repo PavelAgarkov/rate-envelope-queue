@@ -155,14 +155,13 @@ func Test_Acceptance(t *testing.T) {
 	envelopeQueue := NewRateEnvelopeQueue(
 		parent,
 		WithLimitOption(5),
-		// проще не использовать этот парамет вовсе
 		WithWaitingOption(true),
 		WithStopModeOption(Drain),
 	)
 
 	start := func() {
 		envelopeQueue.Start()
-		err := envelopeQueue.Add(envelops["Email"], envelops["Metrics"], envelops["Food"], emailEnvelope, emailEnvelope1, metricsEnvelope1, metricsEnvelope3)
+		err := envelopeQueue.Send(envelops["Email"], envelops["Metrics"], envelops["Food"], emailEnvelope, emailEnvelope1, metricsEnvelope1, metricsEnvelope3)
 		//err := envelopeQueue.Add(envelops["Email"])
 		if err != nil {
 			fmt.Println("add err:", err)

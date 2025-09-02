@@ -224,6 +224,24 @@ func (q *RateEnvelopeQueue) worker(ctx context.Context) {
 	}
 }
 
+// NewRateEnvelopeQueue по умолчанию workqueue теряет задачи в режиме AddAfter при любой остановке очереди.
+// ----------------------------------------------------------------------------------
+// аккуратный режим остановки, прочитаем все что в очереди
+// WithWaitingOption(true),
+// WithStopModeOption(Drain),
+// ----------------------------------------------------------------------------------
+// корректно, если нужен «почти drain», но без жёсткого ожидания всех воркеров
+// WithWaitingOption(false),
+// WithStopModeOption(Drain),
+// ----------------------------------------------------------------------------------
+// корректно для «быстрого, но чистого» останова с ожиданием
+// WithWaitingOption(true),
+// WithStopModeOption(Stop),
+// ----------------------------------------------------------------------------------
+// мгновернный останов без ожидания, все теряем
+// WithWaitingOption(false),
+// WithStopModeOption(Stop),
+// ----------------------------------------------------------------------------------
 func NewRateEnvelopeQueue(base context.Context, options ...func(*RateEnvelopeQueue)) QueuePool {
 	q := &RateEnvelopeQueue{
 		ctx:     base,
@@ -252,7 +270,7 @@ func NewRateEnvelopeQueue(base context.Context, options ...func(*RateEnvelopeQue
 	return q
 }
 
-func (q *RateEnvelopeQueue) Add(envelopes ...*Envelope) error {
+func (q *RateEnvelopeQueue) Send(envelopes ...*Envelope) error {
 	// валидация содержимого (не состояния)
 	for _, e := range envelopes {
 		if e == nil {
