@@ -41,8 +41,10 @@ func Test_Acceptance(t *testing.T) {
 		}),
 		WithAfterHook(func(ctx context.Context, envelope *Envelope) error {
 			fmt.Println("hook after email 1 ", envelope.GetId(), time.Now())
+			// скипнет дальнейшую обработку конверта
 			//return ErrStopEnvelope
 			//return nil
+			// любая ошибка, которая не ErrStopEnvelope будет обработана в failureHook
 			return fmt.Errorf("some error after")
 		}),
 		WithFailureHook(func(ctx context.Context, envelope *Envelope, err error) Decision {
