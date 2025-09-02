@@ -164,7 +164,7 @@ func (q *RateEnvelopeQueue) worker(ctx context.Context) {
 
 			var err error
 			if envelope.beforeHook != nil {
-				hctx, cancel := WithHookTimeout(ctx, envelope.deadline, 0.5, 800*time.Millisecond)
+				hctx, cancel := withHookTimeout(ctx, envelope.deadline, 0.5, 800*time.Millisecond)
 				err = envelope.beforeHook(hctx, envelope)
 				cancel()
 			}
@@ -173,7 +173,7 @@ func (q *RateEnvelopeQueue) worker(ctx context.Context) {
 			err = invoker(tctx, envelope)
 
 			if envelope.afterHook != nil {
-				hctx, cancel := WithHookTimeout(ctx, envelope.deadline, 0.5, 800*time.Millisecond)
+				hctx, cancel := withHookTimeout(ctx, envelope.deadline, 0.5, 800*time.Millisecond)
 				err = envelope.afterHook(hctx, envelope)
 				cancel()
 			}
@@ -212,20 +212,20 @@ func (q *RateEnvelopeQueue) worker(ctx context.Context) {
 					decision := envelope.failureHook(tctx, envelope, err)
 
 					if decision == nil {
-						decision = NewDefaultDestination()
+						decision = DefaultOnceDecision()
 					}
 
 					payload := decision.Payload()
 					t, ok := payload[DestinationStateField]
 					if !ok {
-						payload[DestinationStateField] = DestinationStateDrop
+						payload[DestinationStateField] = DecisionStateDrop
 					}
 
 					if alive {
 						switch t {
-						case DestinationStateRetryNow:
+						case DecisionStateRetryNow:
 							queue.Add(envelope)
-						case DestinationStataRetryAfter:
+						case DecisionStataRetryAfter:
 							delay, ok := payload[PayloadAfterField]
 							if !ok {
 								log.Printf(service + ": envelope failureHook did not return after field; using 30s, please customize field")
@@ -241,7 +241,7 @@ func (q *RateEnvelopeQueue) worker(ctx context.Context) {
 							if delayInterval > 0 {
 								queue.AddAfter(envelope, delayInterval)
 							}
-						case DestinationStateDrop:
+						case DecisionStateDrop:
 						}
 					}
 
@@ -256,7 +256,7 @@ func (q *RateEnvelopeQueue) worker(ctx context.Context) {
 					queue.AddAfter(envelope, envelope.interval)
 				}
 				if envelope.successHook != nil {
-					hctx, cancel := WithHookTimeout(ctx, envelope.deadline, 0.5, 800*time.Millisecond)
+					hctx, cancel := withHookTimeout(ctx, envelope.deadline, 0.5, 800*time.Millisecond)
 					envelope.successHook(hctx, envelope)
 					cancel()
 				}
@@ -290,6 +290,7 @@ func (q *RateEnvelopeQueue) Send(envelopes ...*Envelope) error {
 		q.pending = append(q.pending, envelopes...)
 		q.pendingMu.Unlock()
 		return nil
+
 	case stateRunning:
 		q.queueMu.RLock()
 		local := q.queue
@@ -301,6 +302,7 @@ func (q *RateEnvelopeQueue) Send(envelopes ...*Envelope) error {
 			local.Add(e)
 		}
 		return nil
+
 	default:
 		return ErrEnvelopeQueueIsNotRunning
 	}
@@ -401,18 +403,16 @@ func (q *RateEnvelopeQueue) Stop() {
 	log.Printf(service + ": queue is drained/stopped")
 }
 
-func recoverWrap() {
-	if r := recover(); r != nil {
-		log.Printf(service+": panic recovered: %v\n%s", r, debug.Stack())
+func WithLimitOption(limit int) func(*RateEnvelopeQueue) {
+	return func(q *RateEnvelopeQueue) {
+		q.limit = limit
 	}
 }
 
-func WithLimitOption(limit int) func(*RateEnvelopeQueue) {
-	return func(q *RateEnvelopeQueue) { q.limit = limit }
-}
-
 func WithWaitingOption(waiting bool) func(*RateEnvelopeQueue) {
-	return func(q *RateEnvelopeQueue) { q.waiting = waiting }
+	return func(q *RateEnvelopeQueue) {
+		q.waiting = waiting
+	}
 }
 
 func WithStopModeOption(mode StopMode) func(*RateEnvelopeQueue) {
@@ -437,5 +437,11 @@ func WithLimiterOption(limiter workqueue.TypedRateLimiter[*Envelope]) func(*Rate
 		if limiter != nil {
 			q.limiter = limiter
 		}
+	}
+}
+
+func WithStamps(stamps ...Stamp) func(*RateEnvelopeQueue) {
+	return func(q *RateEnvelopeQueue) {
+		q.queueStamps = append(q.queueStamps, stamps...)
 	}
 }

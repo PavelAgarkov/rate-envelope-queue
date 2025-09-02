@@ -24,7 +24,7 @@ func Test_Acceptance(t *testing.T) {
 		cancel()
 	}()
 
-	emailEnvelope := NewEnvelope(
+	emailEnvelope, err := NewEnvelope(
 		WithId(1),
 		WithType("email_1"),
 		//WithInterval(6*time.Second),
@@ -47,17 +47,21 @@ func Test_Acceptance(t *testing.T) {
 		}),
 		WithFailureHook(func(ctx context.Context, envelope *Envelope, err error) Decision {
 			fmt.Println("failure hook email 1", envelope.GetId(), time.Now(), err)
-			//return NewDefaultDestination()
-			//return NewRetryNowDestination()
-			return NewRetryAfterDestination(time.Second * 5)
+			//return DefaultOnceDecision()
+			//return RetryOnceNowDecision()
+			return RetryOnceAfterDecision(time.Second * 5)
 			//return nil
 		}),
 		WithSuccessHook(func(ctx context.Context, envelope *Envelope) {
 			fmt.Println("success hook email 1", envelope.GetId(), time.Now())
 		}),
+		WithStampsPerEnvelope(LoggingStamp()),
 	)
+	if err != nil {
+		t.Fatal(err)
+	}
 
-	emailEnvelope1 := NewEnvelope(
+	emailEnvelope1, err := NewEnvelope(
 		WithId(1),
 		WithType("email_2"),
 		WithScheduleModeInterval(5*time.Second),
@@ -77,8 +81,11 @@ func Test_Acceptance(t *testing.T) {
 			return ErrStopEnvelope
 		}),
 	)
+	if err != nil {
+		t.Fatal(err)
+	}
 
-	metricsEnvelope := NewEnvelope(
+	metricsEnvelope, err := NewEnvelope(
 		WithId(2),
 		WithType("metrics"),
 		WithScheduleModeInterval(3*time.Second),
@@ -94,8 +101,11 @@ func Test_Acceptance(t *testing.T) {
 			return nil
 		}),
 	)
+	if err != nil {
+		t.Fatal(err)
+	}
 
-	metricsEnvelope1 := NewEnvelope(
+	metricsEnvelope1, err := NewEnvelope(
 		WithId(2),
 		WithType("metrics_1"),
 		WithScheduleModeInterval(0),
@@ -111,8 +121,11 @@ func Test_Acceptance(t *testing.T) {
 			return nil
 		}),
 	)
+	if err != nil {
+		t.Fatal(err)
+	}
 
-	metricsEnvelope3 := NewEnvelope(
+	metricsEnvelope3, err := NewEnvelope(
 		WithId(2),
 		WithType("metrics_3"),
 		WithScheduleModeInterval(0),
@@ -128,8 +141,11 @@ func Test_Acceptance(t *testing.T) {
 			return nil
 		}),
 	)
+	if err != nil {
+		t.Fatal(err)
+	}
 
-	foodEnvelope := NewEnvelope(
+	foodEnvelope, err := NewEnvelope(
 		WithId(3),
 		WithType("food"),
 		WithScheduleModeInterval(2*time.Second),
@@ -145,6 +161,9 @@ func Test_Acceptance(t *testing.T) {
 			return nil
 		}),
 	)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	envelops := map[string]*Envelope{
 		"Email":   emailEnvelope,
