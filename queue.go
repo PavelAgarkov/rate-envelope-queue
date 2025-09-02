@@ -61,7 +61,7 @@ func chain(base Invoker, stamps ...Stamp) Invoker {
 
 func (q *RateEnvelopeQueue) buildInvokerChain(e *Envelope) Invoker {
 	base := func(ctx context.Context, env *Envelope) error {
-		return env.invoke(ctx, e)
+		return env.invoke(ctx, env)
 	}
 	return chain(base, append(q.queueStamps, e.stamps...)...)
 }
@@ -90,18 +90,18 @@ func (q *RateEnvelopeQueue) worker(ctx context.Context) {
 			return
 		}
 
-		envelope, shutdown := q.queue.Get()
+		envelope, shutdown := queue.Get()
 		if shutdown {
 			log.Printf(service + ": worker is shutting down")
 			return
 		}
 
 		err := func(envelope *Envelope) error {
-			defer q.queue.Done(envelope)
+			defer queue.Done(envelope)
 			defer func() {
 				if r := recover(); r != nil {
 					// важен порядок: Forget до выхода (Done отработает после этого defer)
-					q.queue.Forget(envelope)
+					queue.Forget(envelope)
 					log.Printf(service+": panic recovered in envelope: %v\n%s", r, debug.Stack())
 				}
 			}()
@@ -138,22 +138,22 @@ func (q *RateEnvelopeQueue) worker(ctx context.Context) {
 			switch {
 			// отмена/таймаут — забыть и, если периодическая и очередь жива, перепланировать
 			case errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded):
-				q.queue.Forget(envelope)
+				queue.Forget(envelope)
 				if envelope.interval > 0 && alive {
-					q.queue.AddAfter(envelope, envelope.interval)
+					queue.AddAfter(envelope, envelope.interval)
 				}
 				return nil
 
 			// ErrStopEnvelope — забыть и не перепланировать. Ошибка от пользователя о том, что задача больше не нужна
 			case errors.Is(err, ErrStopEnvelope):
-				q.queue.Forget(envelope)
+				queue.Forget(envelope)
 				return nil
 
 			// любая другая ошибка — перепланировать (если периодическая и очередь жива) и, если одиночная, вызвать failureHook (если есть) и реагировать
 			//на ответ пользователя через DestinationResult
 			case err != nil:
 				if envelope.interval > 0 && alive {
-					q.queue.AddAfter(envelope, envelope.interval)
+					queue.AddAfter(envelope, envelope.interval)
 				}
 
 				// одиночная задача с ошибкой — срабатывает failureHook (если есть) и забывается
@@ -175,7 +175,7 @@ func (q *RateEnvelopeQueue) worker(ctx context.Context) {
 					if alive {
 						switch t {
 						case DestinationStateRetryNow:
-							q.queue.Add(envelope)
+							queue.Add(envelope)
 						case DestinationStataRetryAfter:
 							delay, ok := payload[PayloadAfterField]
 							if !ok {
@@ -190,21 +190,21 @@ func (q *RateEnvelopeQueue) worker(ctx context.Context) {
 							}
 
 							if delayInterval > 0 {
-								q.queue.AddAfter(envelope, delayInterval)
+								queue.AddAfter(envelope, delayInterval)
 							}
 						case DestinationStateDrop:
 						}
 					}
 
-					q.queue.Forget(envelope)
+					queue.Forget(envelope)
 
 				}
 				return nil
 
 			default:
-				q.queue.Forget(envelope)
+				queue.Forget(envelope)
 				if envelope.interval > 0 && alive {
-					q.queue.AddAfter(envelope, envelope.interval)
+					queue.AddAfter(envelope, envelope.interval)
 				}
 				if envelope.successHook != nil {
 					hctx, cancel := WithHookTimeout(ctx, envelope.deadline, 0.5, 800*time.Millisecond)
@@ -338,31 +338,29 @@ func (q *RateEnvelopeQueue) Stop() {
 	}
 	q.setState(stateStopping)
 	q.run.Store(false) // запрещаем перепланирование
+	localQueue := q.queue
 	q.lifecycleMu.Unlock()
 
-	if q.queue != nil {
+	// Корректно останавливаем текущую очередь
+	if localQueue != nil {
 		switch q.stopMode {
 		case Drain:
-			q.queue.ShutDownWithDrain()
-
+			localQueue.ShutDownWithDrain()
 		default:
-			q.queue.ShutDown()
+			localQueue.ShutDown()
 		}
 	}
 
+	// Ждём воркеров, если нужно
 	if q.waiting {
 		q.wg.Wait()
-		// только после гарантированного завершения воркеров
-		q.lifecycleMu.Lock()
-		q.setState(stateStopped)
-		q.queue = nil
-		q.lifecycleMu.Unlock()
-	} else {
-		// не обнуляем очередь прямо сейчас — воркеры сами закончатся на shutdown
-		q.lifecycleMu.Lock()
-		q.setState(stateStopped)
-		q.lifecycleMu.Unlock()
 	}
+
+	// Финальная фиксация состояния и обнуление ссылки на очередь
+	q.lifecycleMu.Lock()
+	q.setState(stateStopped)
+	q.queue = nil
+	q.lifecycleMu.Unlock()
 
 	log.Printf(service + ": queue is drained/stopped")
 }
