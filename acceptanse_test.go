@@ -145,9 +145,6 @@ func Test_Acceptance(t *testing.T) {
 		WithLimitOption(5),
 		WithWaitingOption(true),
 		WithStopModeOption(Drain),
-		WithStamps(
-			BeforeAfterStamp(WithHookTimeout),
-		),
 	)
 
 	start := func() {
