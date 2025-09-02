@@ -105,8 +105,21 @@ func (q *RateEnvelopeQueue) worker(ctx context.Context) {
 			}
 			defer tcancel()
 
+			var err error
+			if envelope.beforeHook != nil {
+				hctx, cancel := WithHookTimeout(ctx, envelope.deadline, 0.5, 800*time.Millisecond)
+				err = envelope.beforeHook(hctx, envelope)
+				cancel()
+			}
+
 			invoker := q.buildInvokerChain(envelope)
-			err := invoker(tctx, envelope)
+			err = invoker(tctx, envelope)
+
+			if envelope.afterHook != nil {
+				hctx, cancel := WithHookTimeout(ctx, envelope.deadline, 0.5, 800*time.Millisecond)
+				err = envelope.afterHook(hctx, envelope)
+				cancel()
+			}
 
 			if err == nil && tctx.Err() != nil {
 				err = tctx.Err()

@@ -2,7 +2,6 @@ package rate_envelope_queue
 
 import (
 	"context"
-	"errors"
 	"log"
 	"time"
 )
@@ -104,43 +103,6 @@ func WithHookTimeout(ctx context.Context, base time.Duration, frac float64, min 
 func WithStamps(stamps ...Stamp) func(*RateEnvelopeQueue) {
 	return func(q *RateEnvelopeQueue) {
 		q.queueStamps = append(q.queueStamps, stamps...)
-	}
-}
-
-func BeforeAfterStamp(withTimeout func(ctx context.Context, base time.Duration, frac float64, min time.Duration) (context.Context, context.CancelFunc)) Stamp {
-	return func(next Invoker) Invoker {
-		return func(ctx context.Context, envelope *Envelope) error {
-			if envelope.beforeHook != nil {
-				hctx, cancel := withTimeout(ctx, envelope.deadline, 0.5, 800*time.Millisecond)
-				err := envelope.beforeHook(hctx, envelope)
-				cancel()
-
-				if err != nil {
-					if errors.Is(err, ErrStopEnvelope) {
-						return ErrStopEnvelope
-					}
-					return err
-				}
-			}
-
-			// основной вызов
-			err := next(ctx, envelope)
-
-			if envelope.afterHook != nil {
-				hctx, cancel := withTimeout(ctx, envelope.deadline, 0.5, 800*time.Millisecond)
-				aerr := envelope.afterHook(hctx, envelope)
-				cancel()
-
-				if aerr != nil {
-					if errors.Is(aerr, ErrStopEnvelope) {
-						return ErrStopEnvelope
-					}
-					//log.Printf("%s: envelope %s/%d after hook error: %v", service, envelope._type, envelope.id, aerr)
-					return aerr
-				}
-			}
-			return err
-		}
 	}
 }
 
