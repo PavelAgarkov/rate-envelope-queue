@@ -78,6 +78,7 @@ import "github.com/PavelAgarkov/rate-envelope-queue"
 ctx, cancel := context.WithCancel(context.Background())
 defer cancel()
 
+// тут будут другие примеры
 q := NewRateEnvelopeQueue(
 WithLimitOption(3), // 3 воркера
 WithWaitingOption(true), // ждать завершения горутин при Stop()
