@@ -6,6 +6,63 @@ import (
 	"time"
 )
 
+type destinationState string
+
+const (
+	DestinationStateField                       = "type"
+	PayloadAfterField                           = "after"
+	DestinationStateRetryNow   destinationState = "retry_now"
+	DestinationStataRetryAfter destinationState = "retry_after"
+	DestinationStateDrop       destinationState = "drop"
+)
+
+type Payload map[string]interface{}
+
+type Decision interface {
+	Payload() Payload
+}
+
+func NewDefaultDestination() Decision {
+	return &DefaultDestination{
+		Data: map[string]interface{}{
+			DestinationStateField: DestinationStateDrop,
+		},
+	}
+}
+
+type DefaultDestination struct {
+	Data map[string]interface{}
+}
+
+func (d *DefaultDestination) Payload() Payload {
+	return d.Data
+}
+
+func NewRetryNowDestination() Decision {
+	return &RetryOnceDestination{
+		Data: map[string]interface{}{
+			DestinationStateField: DestinationStateRetryNow,
+		},
+	}
+}
+
+func NewRetryAfterDestination(after time.Duration) Decision {
+	return &RetryOnceDestination{
+		Data: map[string]interface{}{
+			DestinationStateField: DestinationStataRetryAfter,
+			PayloadAfterField:     after,
+		},
+	}
+}
+
+type RetryOnceDestination struct {
+	Data map[string]interface{}
+}
+
+func (d *RetryOnceDestination) Payload() Payload {
+	return d.Data
+}
+
 type Envelope struct {
 	id    uint64
 	_type string
@@ -13,9 +70,14 @@ type Envelope struct {
 	interval time.Duration
 	deadline time.Duration
 
+	// ----- хуки, который разрешают вмешиваться в процесс обработки конверта и остановить его через ошибку ErrStopEnvelope
 	beforeHook func(ctx context.Context, envelope *Envelope) error
-	invoke     func(ctx context.Context) error
+	invoke     func(ctx context.Context, envelope *Envelope) error
 	afterHook  func(ctx context.Context, envelope *Envelope) error
+	// -----
+	// хук, которй позволяет динамически реагировать по решению пользователя на поведение конверта при ошибке
+	failureHook func(ctx context.Context, envelope *Envelope, err error) Decision
+	successHook func(ctx context.Context, envelope *Envelope)
 
 	stamps []Stamp // per-envelope stamps
 }
@@ -38,21 +100,33 @@ func WithStampsPerEnvelope(stamps ...Stamp) func(*Envelope) {
 	}
 }
 
-func WithBeforeHook(hook func(ctx context.Context, envelope *Envelope) error) func(*Envelope) {
+func WithBeforeHook(hook Invoker) func(*Envelope) {
 	return func(e *Envelope) {
 		e.beforeHook = hook
 	}
 }
 
-func WithAfterHook(hook func(ctx context.Context, envelope *Envelope) error) func(*Envelope) {
+func WithAfterHook(hook Invoker) func(*Envelope) {
 	return func(e *Envelope) {
 		e.afterHook = hook
 	}
 }
 
-func WithInvoke(invoke func(ctx context.Context) error) func(*Envelope) {
+func WithInvoke(invoke Invoker) func(*Envelope) {
 	return func(e *Envelope) {
 		e.invoke = invoke
+	}
+}
+
+func WithFailureHook(hook func(ctx context.Context, envelope *Envelope, err error) Decision) func(*Envelope) {
+	return func(e *Envelope) {
+		e.failureHook = hook
+	}
+}
+
+func WithSuccessHook(hook func(ctx context.Context, envelope *Envelope)) func(*Envelope) {
+	return func(e *Envelope) {
+		e.successHook = hook
 	}
 }
 
