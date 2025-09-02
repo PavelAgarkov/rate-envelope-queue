@@ -60,7 +60,7 @@ func Test_Acceptance(t *testing.T) {
 	emailEnvelope1 := NewEnvelope(
 		WithId(1),
 		WithType("email_2"),
-		WithInterval(5*time.Second),
+		WithScheduleModeInterval(5*time.Second),
 		WithDeadline(3*time.Second),
 		WithInvoke(func(ctx context.Context, envelope *Envelope) error {
 			time.Sleep(5 * time.Second)
@@ -81,7 +81,7 @@ func Test_Acceptance(t *testing.T) {
 	metricsEnvelope := NewEnvelope(
 		WithId(2),
 		WithType("metrics"),
-		WithInterval(3*time.Second),
+		WithScheduleModeInterval(3*time.Second),
 		WithDeadline(1*time.Second),
 		WithBeforeHook(func(ctx context.Context, envelope *Envelope) error {
 			return nil
@@ -98,7 +98,7 @@ func Test_Acceptance(t *testing.T) {
 	metricsEnvelope1 := NewEnvelope(
 		WithId(2),
 		WithType("metrics_1"),
-		WithInterval(0),
+		WithScheduleModeInterval(0),
 		WithDeadline(1*time.Second),
 		WithBeforeHook(func(ctx context.Context, envelope *Envelope) error {
 			return nil
@@ -115,7 +115,7 @@ func Test_Acceptance(t *testing.T) {
 	metricsEnvelope3 := NewEnvelope(
 		WithId(2),
 		WithType("metrics_3"),
-		WithInterval(0),
+		WithScheduleModeInterval(0),
 		WithDeadline(1*time.Second),
 		WithBeforeHook(func(ctx context.Context, envelope *Envelope) error {
 			return nil
@@ -132,7 +132,7 @@ func Test_Acceptance(t *testing.T) {
 	foodEnvelope := NewEnvelope(
 		WithId(3),
 		WithType("food"),
-		WithInterval(2*time.Second),
+		WithScheduleModeInterval(2*time.Second),
 		WithDeadline(1*time.Second),
 		WithBeforeHook(func(ctx context.Context, envelope *Envelope) error {
 			return nil

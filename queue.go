@@ -52,6 +52,52 @@ type RateEnvelopeQueue struct {
 	pending   []*Envelope
 }
 
+// NewRateEnvelopeQueue по умолчанию workqueue теряет задачи в режиме AddAfter при любой остановке очереди.
+// ----------------------------------------------------------------------------------
+// аккуратный режим остановки, прочитаем все что в очереди
+// WithWaitingOption(true),
+// WithStopModeOption(Drain),
+// ----------------------------------------------------------------------------------
+// корректно, если нужен «почти drain», но без жёсткого ожидания всех воркеров
+// WithWaitingOption(false),
+// WithStopModeOption(Drain),
+// ----------------------------------------------------------------------------------
+// корректно для «быстрого, но чистого» останова с ожиданием
+// WithWaitingOption(true),
+// WithStopModeOption(Stop),
+// ----------------------------------------------------------------------------------
+// мгновернный останов без ожидания, все теряем
+// WithWaitingOption(false),
+// WithStopModeOption(Stop),
+// ----------------------------------------------------------------------------------
+func NewRateEnvelopeQueue(base context.Context, options ...func(*RateEnvelopeQueue)) QueuePool {
+	q := &RateEnvelopeQueue{
+		ctx:     base,
+		waiting: true,
+		state:   stateInit,
+	}
+	for _, o := range options {
+		o(q)
+	}
+
+	if q.limiter == nil {
+		q.limiter = workqueue.NewTypedMaxOfRateLimiter[*Envelope](
+			workqueue.NewTypedItemExponentialFailureRateLimiter[*Envelope](1*time.Second, 30*time.Second),
+			&workqueue.TypedBucketRateLimiter[*Envelope]{Limiter: rate.NewLimiter(5, 10)},
+		)
+	}
+	if q.limit <= 0 {
+		panic(service + ": limit must be greater than 0")
+	}
+	if q.stopMode == "" {
+		panic(service + ": stopMode must be set")
+	}
+	// в init очередь ещё не «живая»
+	q.run.Store(false)
+
+	return q
+}
+
 func chain(base Invoker, stamps ...Stamp) Invoker {
 	w := base
 	for i := len(stamps) - 1; i >= 0; i-- {
@@ -222,52 +268,6 @@ func (q *RateEnvelopeQueue) worker(ctx context.Context) {
 			log.Printf(service+": envelope %s/%d error: %v", envelope._type, envelope.id, err)
 		}
 	}
-}
-
-// NewRateEnvelopeQueue по умолчанию workqueue теряет задачи в режиме AddAfter при любой остановке очереди.
-// ----------------------------------------------------------------------------------
-// аккуратный режим остановки, прочитаем все что в очереди
-// WithWaitingOption(true),
-// WithStopModeOption(Drain),
-// ----------------------------------------------------------------------------------
-// корректно, если нужен «почти drain», но без жёсткого ожидания всех воркеров
-// WithWaitingOption(false),
-// WithStopModeOption(Drain),
-// ----------------------------------------------------------------------------------
-// корректно для «быстрого, но чистого» останова с ожиданием
-// WithWaitingOption(true),
-// WithStopModeOption(Stop),
-// ----------------------------------------------------------------------------------
-// мгновернный останов без ожидания, все теряем
-// WithWaitingOption(false),
-// WithStopModeOption(Stop),
-// ----------------------------------------------------------------------------------
-func NewRateEnvelopeQueue(base context.Context, options ...func(*RateEnvelopeQueue)) QueuePool {
-	q := &RateEnvelopeQueue{
-		ctx:     base,
-		waiting: true,
-		state:   stateInit,
-	}
-	for _, o := range options {
-		o(q)
-	}
-
-	if q.limiter == nil {
-		q.limiter = workqueue.NewTypedMaxOfRateLimiter[*Envelope](
-			workqueue.NewTypedItemExponentialFailureRateLimiter[*Envelope](1*time.Second, 30*time.Second),
-			&workqueue.TypedBucketRateLimiter[*Envelope]{Limiter: rate.NewLimiter(5, 10)},
-		)
-	}
-	if q.limit <= 0 {
-		panic(service + ": limit must be greater than 0")
-	}
-	if q.stopMode == "" {
-		panic(service + ": stopMode must be set")
-	}
-	// в init очередь ещё не «живая»
-	q.run.Store(false)
-
-	return q
 }
 
 func (q *RateEnvelopeQueue) Send(envelopes ...*Envelope) error {

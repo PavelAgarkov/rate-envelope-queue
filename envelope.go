@@ -130,7 +130,8 @@ func WithSuccessHook(hook func(ctx context.Context, envelope *Envelope)) func(*E
 	}
 }
 
-func WithInterval(d time.Duration) func(*Envelope) {
+// WithScheduleModeInterval 0 means run once, not a schedule
+func WithScheduleModeInterval(d time.Duration) func(*Envelope) {
 	return func(e *Envelope) {
 		e.interval = d
 	}
@@ -158,6 +159,11 @@ func NewEnvelope(opt ...func(*Envelope)) *Envelope {
 	envelope := &Envelope{}
 	for _, o := range opt {
 		o(envelope)
+	}
+
+	// validate required fields
+	if envelope.invoke == nil {
+		panic("envelope invoke func is required")
 	}
 
 	return envelope
