@@ -50,6 +50,9 @@ type RateEnvelopeQueue struct {
 	// Буфер задач, добавленных до первого Start()
 	pendingMu sync.Mutex
 	pending   []*Envelope
+
+	allowedCapacity uint64
+	currentCapacity atomic.Uint64
 }
 
 // NewRateEnvelopeQueue по умолчанию workqueue теряет задачи в режиме AddAfter при любой остановке очереди.
@@ -146,6 +149,7 @@ func (q *RateEnvelopeQueue) worker(ctx context.Context) {
 		}
 
 		err := func(envelope *Envelope) error {
+			defer q.dec()
 			defer queue.Done(envelope)
 			defer func() {
 				if r := recover(); r != nil {
@@ -182,7 +186,8 @@ func (q *RateEnvelopeQueue) worker(ctx context.Context) {
 				err = tctx.Err()
 			}
 
-			alive := q.run.Load() && q.ctx != nil && q.ctx.Err() == nil && q.currentState() == stateRunning
+			alive := q.run.Load() && q.ctx != nil && q.ctx.Err() == nil &&
+				q.currentState() == stateRunning && !queue.ShuttingDown()
 
 			switch {
 			// отмена/таймаут — забыть и, если периодическая и очередь жива, перепланировать
@@ -190,6 +195,7 @@ func (q *RateEnvelopeQueue) worker(ctx context.Context) {
 				queue.Forget(envelope)
 				if envelope.interval > 0 && alive {
 					queue.AddAfter(envelope, envelope.interval)
+					q.inc(1)
 				}
 				return nil
 
@@ -202,7 +208,9 @@ func (q *RateEnvelopeQueue) worker(ctx context.Context) {
 			//на ответ пользователя через DestinationResult
 			case err != nil:
 				if envelope.interval > 0 && alive {
+					queue.Forget(envelope)
 					queue.AddAfter(envelope, envelope.interval)
+					q.inc(1)
 				}
 
 				// одиночная задача с ошибкой — срабатывает failureHook (если есть) и забывается
@@ -216,16 +224,19 @@ func (q *RateEnvelopeQueue) worker(ctx context.Context) {
 					}
 
 					payload := decision.Payload()
-					t, ok := payload[DestinationStateField]
+
+					state, ok := payload[DestinationStateField].(destinationState)
 					if !ok {
 						payload[DestinationStateField] = DecisionStateDrop
+						state = DecisionStateDrop
 					}
 
 					if alive {
-						switch t {
+						switch state {
 						case DecisionStateRetryNow:
 							queue.Add(envelope)
-						case DecisionStataRetryAfter:
+							q.inc(1)
+						case DecisionStateRetryAfter:
 							delay, ok := payload[PayloadAfterField]
 							if !ok {
 								log.Printf(service + ": envelope failureHook did not return after field; using 30s, please customize field")
@@ -240,6 +251,7 @@ func (q *RateEnvelopeQueue) worker(ctx context.Context) {
 
 							if delayInterval > 0 {
 								queue.AddAfter(envelope, delayInterval)
+								q.inc(1)
 							}
 						case DecisionStateDrop:
 						}
@@ -254,6 +266,7 @@ func (q *RateEnvelopeQueue) worker(ctx context.Context) {
 				queue.Forget(envelope)
 				if envelope.interval > 0 && alive {
 					queue.AddAfter(envelope, envelope.interval)
+					q.inc(1)
 				}
 				if envelope.successHook != nil {
 					hctx, cancel := withHookTimeout(ctx, envelope.deadline, 0.5, 800*time.Millisecond)
@@ -284,27 +297,46 @@ func (q *RateEnvelopeQueue) Send(envelopes ...*Envelope) error {
 		}
 	}
 
-	switch q.currentState() {
-	case stateInit:
-		q.pendingMu.Lock()
-		q.pending = append(q.pending, envelopes...)
-		q.pendingMu.Unlock()
-		return nil
+	need := uint64(len(envelopes))
 
-	case stateRunning:
-		q.queueMu.RLock()
-		local := q.queue
-		q.queueMu.RUnlock()
-		if local == nil {
+	for {
+		s := q.currentState()
+		switch s {
+		case stateInit:
+			q.pendingMu.Lock()
+			// повторная проверка состояния под локом
+			if q.currentState() == stateInit {
+				if !q.tryReserve(need) {
+					q.pendingMu.Unlock()
+					return ErrAllowedQueueCapacityExceeded
+				}
+				q.pending = append(q.pending, envelopes...)
+				q.pendingMu.Unlock()
+				return nil
+			}
+			q.pendingMu.Unlock()
+			// состояние сменилось — пробуем снова по новому пути
+			continue
+
+		case stateRunning:
+			if !q.tryReserve(need) {
+				return ErrAllowedQueueCapacityExceeded
+			}
+			q.queueMu.RLock()
+			local := q.queue
+			q.queueMu.RUnlock()
+			if local == nil {
+				q.unreserve(need)
+				return ErrEnvelopeQueueIsNotRunning
+			}
+			for _, e := range envelopes {
+				local.Add(e)
+			}
+			return nil
+
+		default:
 			return ErrEnvelopeQueueIsNotRunning
 		}
-		for _, e := range envelopes {
-			local.Add(e)
-		}
-		return nil
-
-	default:
-		return ErrEnvelopeQueueIsNotRunning
 	}
 }
 
@@ -400,7 +432,44 @@ func (q *RateEnvelopeQueue) Stop() {
 	q.queue = nil
 	q.queueMu.Unlock()
 
+	if q.stopMode == Stop {
+		q.currentCapacity.Store(0)
+	}
+
+	if q.stopMode == Drain {
+		if v := q.currentCapacity.Load(); v != 0 {
+			q.currentCapacity.Store(0)
+		}
+	}
+
 	log.Printf(service + ": queue is drained/stopped")
+}
+
+func (q *RateEnvelopeQueue) tryReserve(n uint64) bool {
+	if q.allowedCapacity == 0 {
+		return true
+	}
+	for {
+		cur := q.currentCapacity.Load()
+		if cur+n > q.allowedCapacity {
+			return false
+		}
+		if q.currentCapacity.CompareAndSwap(cur, cur+n) {
+			return true
+		}
+	}
+}
+
+func (q *RateEnvelopeQueue) unreserve(n uint64) {
+	q.currentCapacity.Add(^uint64(n - 1))
+}
+
+func (q *RateEnvelopeQueue) inc(n uint64) {
+	q.currentCapacity.Add(n)
+}
+
+func (q *RateEnvelopeQueue) dec() {
+	q.currentCapacity.Add(^uint64(0))
 }
 
 func WithLimitOption(limit int) func(*RateEnvelopeQueue) {
@@ -443,5 +512,11 @@ func WithLimiterOption(limiter workqueue.TypedRateLimiter[*Envelope]) func(*Rate
 func WithStamps(stamps ...Stamp) func(*RateEnvelopeQueue) {
 	return func(q *RateEnvelopeQueue) {
 		q.queueStamps = append(q.queueStamps, stamps...)
+	}
+}
+
+func WithAllowedCapacityOption(capacity uint64) func(*RateEnvelopeQueue) {
+	return func(q *RateEnvelopeQueue) {
+		q.allowedCapacity = capacity
 	}
 }

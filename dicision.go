@@ -8,7 +8,7 @@ const (
 	DestinationStateField                    = "type"
 	PayloadAfterField                        = "after"
 	DecisionStateRetryNow   destinationState = "retry_now"
-	DecisionStataRetryAfter destinationState = "retry_after"
+	DecisionStateRetryAfter destinationState = "retry_after"
 	DecisionStateDrop       destinationState = "drop"
 )
 
@@ -48,7 +48,7 @@ func RetryOnceAfterDecision(after time.Duration) Decision {
 	}
 	return &RetryOnceDecision{
 		data: map[string]interface{}{
-			DestinationStateField: DecisionStataRetryAfter,
+			DestinationStateField: DecisionStateRetryAfter,
 			PayloadAfterField:     after,
 		},
 	}

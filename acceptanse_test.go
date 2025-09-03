@@ -196,12 +196,20 @@ func Test_Acceptance(t *testing.T) {
 		WithLimitOption(5),
 		WithWaitingOption(true),
 		WithStopModeOption(Drain),
+		WithAllowedCapacityOption(5),
 	)
 
 	start := func() {
 		envelopeQueue.Start()
-		err := envelopeQueue.Send(envelops["Email"], envelops["Metrics"], envelops["Food"], emailEnvelope, emailEnvelope1, metricsEnvelope1, metricsEnvelope3)
-		//err := envelopeQueue.Add(envelops["Email"])
+		err := envelopeQueue.Send(envelops["Email"], envelops["Metrics"], envelops["Food"])
+		if err != nil {
+			fmt.Println("add err:", err)
+		}
+		err = envelopeQueue.Send(emailEnvelope1)
+		if err != nil {
+			fmt.Println("add err:", err)
+		}
+		err = envelopeQueue.Send(emailEnvelope, emailEnvelope1, metricsEnvelope1, metricsEnvelope3)
 		if err != nil {
 			fmt.Println("add err:", err)
 		}
