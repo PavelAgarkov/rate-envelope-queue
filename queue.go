@@ -9,7 +9,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"golang.org/x/time/rate"
 	"k8s.io/client-go/util/workqueue"
 )
 
@@ -84,10 +83,7 @@ func NewRateEnvelopeQueue(base context.Context, options ...func(*RateEnvelopeQue
 	}
 
 	if q.limiter == nil {
-		q.limiter = workqueue.NewTypedMaxOfRateLimiter[*Envelope](
-			workqueue.NewTypedItemExponentialFailureRateLimiter[*Envelope](1*time.Second, 30*time.Second),
-			&workqueue.TypedBucketRateLimiter[*Envelope]{Limiter: rate.NewLimiter(5, 10)},
-		)
+		q.limiter = workqueue.NewTypedMaxOfRateLimiter[*Envelope]()
 	}
 	if q.limit <= 0 {
 		panic(service + ": limit must be greater than 0")
