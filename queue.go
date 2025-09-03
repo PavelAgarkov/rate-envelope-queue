@@ -70,7 +70,7 @@ type RateEnvelopeQueue struct {
 // WithWaitingOption(false),
 // WithStopModeOption(Stop),
 // ----------------------------------------------------------------------------------
-func NewRateEnvelopeQueue(base context.Context, options ...func(*RateEnvelopeQueue)) QueuePool {
+func NewRateEnvelopeQueue(base context.Context, options ...func(*RateEnvelopeQueue)) SingleQueuePool {
 	q := &RateEnvelopeQueue{
 		ctx:     base,
 		waiting: true,

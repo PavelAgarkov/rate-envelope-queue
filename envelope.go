@@ -22,7 +22,8 @@ type Envelope struct {
 	failureHook func(ctx context.Context, envelope *Envelope, err error) Decision
 	successHook func(ctx context.Context, envelope *Envelope)
 
-	stamps []Stamp // per-envelope stamps
+	stamps  []Stamp // per-envelope stamps
+	payload interface{}
 }
 
 func NewEnvelope(opt ...func(*Envelope)) (*Envelope, error) {
@@ -49,6 +50,14 @@ func (envelope *Envelope) GetType() string {
 
 func (envelope *Envelope) GetStamps() []Stamp {
 	return envelope.stamps
+}
+
+func (envelope *Envelope) GetPayload() interface{} {
+	return envelope.payload
+}
+
+func (envelope *Envelope) UpdatePayload(p interface{}) {
+	envelope.payload = p
 }
 
 func WithStampsPerEnvelope(stamps ...Stamp) func(*Envelope) {
@@ -109,5 +118,11 @@ func WithType(t string) func(*Envelope) {
 func WithId(id uint64) func(*Envelope) {
 	return func(e *Envelope) {
 		e.id = id
+	}
+}
+
+func WithPayload(p interface{}) func(*Envelope) {
+	return func(e *Envelope) {
+		e.payload = p
 	}
 }

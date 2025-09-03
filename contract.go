@@ -26,8 +26,10 @@ const (
 	service = "[rate-envelope-queue]"
 )
 
-type QueuePool interface {
-	Send(envelopes ...*Envelope) error
-	Start()
-	Stop()
-}
+type (
+	SingleQueuePool interface {
+		Send(envelopes ...*Envelope) error
+		Start()
+		Stop()
+	}
+)

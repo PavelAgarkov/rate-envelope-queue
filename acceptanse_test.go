@@ -11,6 +11,12 @@ import (
 	"time"
 )
 
+type User struct {
+	Name  string
+	Email string
+	Age   int
+}
+
 func Test_Acceptance(t *testing.T) {
 	parent, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -24,6 +30,11 @@ func Test_Acceptance(t *testing.T) {
 		cancel()
 	}()
 
+	user1 := &User{
+		Name:  "John",
+		Email: "@gmail.com",
+		Age:   30,
+	}
 	emailEnvelope, err := NewEnvelope(
 		WithId(1),
 		WithType("email_1"),
@@ -37,10 +48,16 @@ func Test_Acceptance(t *testing.T) {
 		WithInvoke(func(ctx context.Context, envelope *Envelope) error {
 			time.Sleep(5 * time.Second)
 			fmt.Println("📧 Email v1", time.Now())
+			user := envelope.GetPayload().(*User)
+			fmt.Println("user:", user.Name, user.Email, user.Age)
+			user.Name = "Changed Name"
+			envelope.UpdatePayload(user)
 			return nil
 		}),
 		WithAfterHook(func(ctx context.Context, envelope *Envelope) error {
 			fmt.Println("hook after email 1 ", envelope.GetId(), time.Now())
+			user := envelope.GetPayload().(*User)
+			fmt.Println("user:", user.Name, user.Email, user.Age)
 			// скипнет дальнейшую обработку конверта
 			//return ErrStopEnvelope
 			//return nil
@@ -58,6 +75,7 @@ func Test_Acceptance(t *testing.T) {
 			fmt.Println("success hook email 1", envelope.GetId(), time.Now())
 		}),
 		WithStampsPerEnvelope(LoggingStamp()),
+		WithPayload(user1),
 	)
 	if err != nil {
 		t.Fatal(err)
