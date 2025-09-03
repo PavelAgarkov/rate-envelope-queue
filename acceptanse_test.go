@@ -201,7 +201,7 @@ func Test_Acceptance(t *testing.T) {
 		WithLimitOption(5),
 		WithWaitingOption(true),
 		WithStopModeOption(Drain),
-		WithAllowedCapacityOption(5),
+		WithAllowedCapacityOption(50),
 	)
 
 	start := func() {
@@ -226,6 +226,66 @@ func Test_Acceptance(t *testing.T) {
 	start()
 	stop()
 	start()
+
+	go func() {
+		for i := range 15 {
+			user1 := &User{
+				Name:  "John",
+				Email: "@gmail.com",
+				Age:   30,
+			}
+			id := i + 1
+			emailEnvelope, err = NewEnvelope(
+				WithId(uint64(id)),
+				WithType("email_1"),
+				//WithInterval(6*time.Second),
+				WithDeadline(5*time.Second),
+				WithBeforeHook(func(ctx context.Context, envelope *Envelope) error {
+					fmt.Println("hook before email 1 ", envelope.GetId(), time.Now())
+					//return ErrStopTask
+					return nil
+				}),
+				WithInvoke(func(ctx context.Context, envelope *Envelope) error {
+					time.Sleep(5 * time.Second)
+					fmt.Println("📧 Email v1", time.Now())
+					user := envelope.GetPayload().(*User)
+					fmt.Println("user:", user.Name, user.Email, user.Age)
+					user.Name = "Changed Name"
+					envelope.UpdatePayload(user)
+					return nil
+				}),
+				WithAfterHook(func(ctx context.Context, envelope *Envelope) error {
+					fmt.Println("hook after email 1 ", envelope.GetId(), time.Now())
+					user := envelope.GetPayload().(*User)
+					fmt.Println("user:", user.Name, user.Email, user.Age)
+					// скипнет дальнейшую обработку конверта
+					//return ErrStopEnvelope
+					//return nil
+					// любая ошибка, которая не ErrStopEnvelope будет обработана в failureHook
+					return fmt.Errorf("some error after")
+				}),
+				WithFailureHook(func(ctx context.Context, envelope *Envelope, err error) Decision {
+					fmt.Println("failure hook email 1", envelope.GetId(), time.Now(), err)
+					return DefaultOnceDecision()
+					//return RetryOnceNowDecision()
+					//return RetryOnceAfterDecision(time.Second * 5)
+					//return nil
+				}),
+				WithSuccessHook(func(ctx context.Context, envelope *Envelope) {
+					fmt.Println("success hook email 1", envelope.GetId(), time.Now())
+				}),
+				WithStampsPerEnvelope(LoggingStamp()),
+				WithPayload(user1),
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			err = envelopeQueue.Send(emailEnvelope)
+			if err != nil {
+				fmt.Println("add err async:", err)
+			}
+		}
+	}()
 
 	go func() {
 		select {
