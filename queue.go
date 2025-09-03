@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"k8s.io/client-go/util/workqueue"
+	_ "k8s.io/component-base/metrics/prometheus/workqueue"
 )
 
 // внутренний автомат состояний
@@ -23,7 +24,8 @@ const (
 )
 
 type RateEnvelopeQueue struct {
-	ctx context.Context
+	name string
+	ctx  context.Context
 
 	limit         int
 	queueMu       sync.RWMutex
@@ -72,11 +74,12 @@ type RateEnvelopeQueue struct {
 // WithWaitingOption(false),
 // WithStopModeOption(Stop),
 // ----------------------------------------------------------------------------------
-func NewRateEnvelopeQueue(base context.Context, options ...func(*RateEnvelopeQueue)) SingleQueuePool {
+func NewRateEnvelopeQueue(base context.Context, name string, options ...func(*RateEnvelopeQueue)) SingleQueuePool {
 	q := &RateEnvelopeQueue{
 		ctx:     base,
 		waiting: true,
 		state:   stateInit,
+		name:    name,
 	}
 	for _, o := range options {
 		o(q)
@@ -351,8 +354,9 @@ func (q *RateEnvelopeQueue) Start() {
 	// recreate workqueue
 	var newQ workqueue.TypedRateLimitingInterface[*Envelope]
 	if q.workqueueConf == nil {
-		newQ = workqueue.NewTypedRateLimitingQueue[*Envelope](q.limiter)
+		newQ = workqueue.NewTypedRateLimitingQueueWithConfig[*Envelope](q.limiter, workqueue.TypedRateLimitingQueueConfig[*Envelope]{Name: q.name})
 	} else {
+		q.workqueueConf.Name = q.name
 		newQ = workqueue.NewTypedRateLimitingQueueWithConfig[*Envelope](q.limiter, *q.workqueueConf)
 	}
 

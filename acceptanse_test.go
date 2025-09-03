@@ -4,11 +4,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
 	"testing"
 	"time"
+
+	"k8s.io/component-base/metrics/legacyregistry"
 )
 
 type User struct {
@@ -18,6 +21,7 @@ type User struct {
 }
 
 func Test_Acceptance(t *testing.T) {
+	serveMetrics()
 	parent, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -193,6 +197,7 @@ func Test_Acceptance(t *testing.T) {
 
 	envelopeQueue := NewRateEnvelopeQueue(
 		parent,
+		"test_queue",
 		WithLimitOption(5),
 		WithWaitingOption(true),
 		WithStopModeOption(Drain),
@@ -234,4 +239,10 @@ func Test_Acceptance(t *testing.T) {
 	fmt.Println("parent: done")
 	stop()
 	fmt.Println("queue: done")
+}
+
+func serveMetrics() {
+	mux := http.NewServeMux()
+	mux.Handle("/metrics", legacyregistry.Handler())
+	go http.ListenAndServe(":8080", mux)
 }
