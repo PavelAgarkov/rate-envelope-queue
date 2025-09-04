@@ -257,21 +257,17 @@ go test -bench=BenchmarkQueueInterval -benchmem
 
 ```
 $ go test -bench=BenchmarkQueueFull -benchmem
-  4874815               315.0 ns/op            18 B/op          1 allocs/op
+ 3212882               348.7 ns/op            40 B/op          1 allocs/op
 PASS
-ok      github.com/PavelAgarkov/rate-envelope-queue     1.796s
+ok      github.com/PavelAgarkov/rate-envelope-queue     1.507s
 ```
 
 ```
 $ go test -bench=BenchmarkQueueInterval -benchmem
-    97928             13335 ns/op            1715 B/op         22 allocs/op
+  110313             12903 ns/op            1809 B/op         24 allocs/op
 PASS
-ok      github.com/PavelAgarkov/rate-envelope-queue     2.297s
+ok      github.com/PavelAgarkov/rate-envelope-queue     1.544s
 ```
-
-Краткая интерпретация:
-- **`BenchmarkQueueFull`** — добавление одноразового конверта с пустыми хуками: ~315 нс/операцию, 1 аллокация.
-- **`BenchmarkQueueInterval`** — активная перепланировка (`AddAfter`) множества периодических задач: ~13.3 мкс/операцию, ожидаемо больше аллокаций за счёт таймеров и внутренних структур.
 
 ---
 
