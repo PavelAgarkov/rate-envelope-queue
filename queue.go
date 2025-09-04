@@ -465,7 +465,7 @@ func (q *RateEnvelopeQueue) Start() {
 }
 
 func (q *RateEnvelopeQueue) Stop() {
-	// Переводим состояние
+	// Переводим состояние в stopping (под "зонтиком"), без долгих операций под локом.
 	q.lifecycleMu.Lock()
 	if q.currentState() != stateRunning {
 		q.lifecycleMu.Unlock()
@@ -475,43 +475,41 @@ func (q *RateEnvelopeQueue) Stop() {
 	q.run.Store(false)
 	q.lifecycleMu.Unlock()
 
-	// Берём локальную ссылку, НЕ обнуляя публикацию пока идёт drain
+	// Снимок ссылки на очередь (не обнуляем публикацию до финализации).
 	q.queueMu.RLock()
 	local := q.queue
 	q.queueMu.RUnlock()
 
-	// Останавливаем старую очередь
+	// Сигнал остановки очереди.
 	if local != nil {
 		switch q.stopMode {
 		case Drain:
 			local.ShutDownWithDrain()
-		default:
+		default: // Stop
 			local.ShutDown()
 		}
 	}
 
+	// Если ждём — дождаться завершения воркеров
 	if q.waiting {
 		q.wg.Wait()
-	}
 
-	if local != nil && q.stopMode == Stop {
-		if q.waiting {
-			// здесь уже прошёл wg.Wait(), in-flight обнулились dec()
-			q.pendingMu.Lock()
-			pend := uint64(len(q.pending))
-			q.pendingMu.Unlock()
+		// Пост-коррекция ёмкости: снимаем "хвост" (queued/delayed), который мог потеряться при остановке.
+		// Оставляем резерв только под pending, т.к. они переживают рестарт.
+		q.pendingMu.Lock()
+		pend := uint64(len(q.pending))
+		q.pendingMu.Unlock()
 
-			cur := q.currentCapacity.Load()
-			if cur > pend {
-				q.unreserve(cur - pend)
-			}
-		} else {
-			// ничего не делаем: остаток снимут dec() от in-flight,
-			// но «хвост» (queued/delayed) подтечёт — документируйте это.
+		cur := q.currentCapacity.Load()
+		if cur > pend {
+			q.unreserve(cur - pend)
 		}
+	} else {
+		// waiting=false: не трогаем счётчик — in-flight сами вызовут dec() позже.
+		// Для Stop хвост остаётся учтённым (задокументированная утечка до следующего корректного цикла).
 	}
 
-	// Теперь можно финализировать состояние и обнулить публикуемую ссылку
+	// Финализируем состояние и публикуем отсутствие очереди.
 	q.lifecycleMu.Lock()
 	q.setState(stateStopped)
 	q.lifecycleMu.Unlock()
