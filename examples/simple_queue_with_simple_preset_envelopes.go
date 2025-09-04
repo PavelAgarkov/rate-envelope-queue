@@ -1,0 +1,100 @@
+package main
+
+import (
+	"context"
+	"fmt"
+	"os"
+	"os/signal"
+	"syscall"
+	"time"
+
+	req "github.com/PavelAgarkov/rate-envelope-queue"
+)
+
+func main() {
+	parent, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	sig := make(chan os.Signal, 1)
+	signal.Notify(sig, syscall.SIGTERM, syscall.SIGINT, syscall.SIGQUIT)
+
+	go func() {
+		<-sig
+		fmt.Println("signal shutdown")
+		cancel()
+	}()
+
+	queue := req.NewSimpleDrainQueue(
+		parent,
+		"some_queue",
+		5,
+	)
+	envelope1, err := req.NewScheduleEnvelope(
+		2*time.Second,
+		1*time.Second,
+		func(ctx context.Context, envelope *req.Envelope) error {
+			fmt.Println("📧 Email v1", time.Now())
+			return nil
+		},
+		nil,
+	)
+	if err != nil {
+		fmt.Println("main: can't create envelope1", err)
+		return
+	}
+	envelope2, err := req.NewScheduleEnvelope(
+		4*time.Second,
+		3*time.Second,
+		func(ctx context.Context, envelope *req.Envelope) error {
+			fmt.Println("📧 Email v2", time.Now())
+			return nil
+		},
+		nil,
+	)
+	if err != nil {
+		fmt.Println("main: can't create envelope2", err)
+		return
+	}
+	envelope3, err := req.NewScheduleEnvelope(
+		6*time.Second,
+		2*time.Second,
+		func(ctx context.Context, envelope *req.Envelope) error {
+			fmt.Println("📧 Email v3", time.Now())
+			return nil
+		},
+		nil,
+	)
+	if err != nil {
+		fmt.Println("main: can't create envelope3", err)
+		return
+	}
+	envelope4, err := req.NewDynamicEnvelope(
+		1*time.Second,
+		func(ctx context.Context, envelope *req.Envelope) error {
+			fmt.Println("📧 Email dynamic", time.Now())
+			return nil
+		},
+		nil,
+	)
+	if err != nil {
+		fmt.Println("main: can't create envelope", err)
+		return
+	}
+
+	err = queue.Send(envelope1, envelope2, envelope3, envelope4)
+
+	queue.Start()
+
+	go func() {
+		select {
+		case <-time.After(25 * time.Second):
+			fmt.Println("main: timeout")
+			cancel()
+		}
+	}()
+
+	<-parent.Done()
+	fmt.Println("parent: done")
+	queue.Stop()
+	fmt.Println("queue: done")
+}

@@ -26,6 +26,26 @@ type Envelope struct {
 	payload interface{}
 }
 
+func NewDynamicEnvelope(deadline time.Duration, invoke Invoker, payload interface{}) (*Envelope, error) {
+	envelope, err := NewEnvelope(
+		WithDeadline(deadline),
+		WithInvoke(invoke),
+		WithScheduleModeInterval(0),
+		WithPayload(payload),
+	)
+	return envelope, err
+}
+
+func NewScheduleEnvelope(interval, deadline time.Duration, invoke Invoker, payload interface{}) (*Envelope, error) {
+	envelope, err := NewEnvelope(
+		WithDeadline(deadline),
+		WithInvoke(invoke),
+		WithScheduleModeInterval(interval),
+		WithPayload(payload),
+	)
+	return envelope, err
+}
+
 func NewEnvelope(opt ...func(*Envelope)) (*Envelope, error) {
 	envelope := &Envelope{}
 	for _, o := range opt {

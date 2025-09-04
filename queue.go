@@ -100,6 +100,30 @@ func NewRateEnvelopeQueue(base context.Context, name string, options ...func(*Ra
 	return q
 }
 
+func NewSimpleDrainQueue(base context.Context, queueName string, queueRate int) SingleQueuePool {
+	q := NewRateEnvelopeQueue(
+		base,
+		queueName,
+		WithLimitOption(queueRate),
+		WithWaitingOption(true),
+		WithStopModeOption(Drain),
+		WithAllowedCapacityOption(1_000_000),
+	)
+	return q
+}
+
+func NewSimpleStopQueue(base context.Context, queueName string, queueRate int) SingleQueuePool {
+	q := NewRateEnvelopeQueue(
+		base,
+		queueName,
+		WithLimitOption(queueRate),
+		WithWaitingOption(false),
+		WithStopModeOption(Stop),
+		WithAllowedCapacityOption(1_000_000),
+	)
+	return q
+}
+
 func chain(base Invoker, stamps ...Stamp) Invoker {
 	w := base
 	for i := len(stamps) - 1; i >= 0; i-- {
@@ -288,7 +312,7 @@ func (q *RateEnvelopeQueue) Send(envelopes ...*Envelope) error {
 		if e == nil {
 			return ErrAdditionEnvelopeToQueueBadFields
 		}
-		if e._type == "" || e.invoke == nil || e.interval < 0 || e.deadline < 0 {
+		if e.invoke == nil || e.interval < 0 || e.deadline < 0 {
 			return ErrAdditionEnvelopeToQueueBadFields
 		}
 		if e.interval > 0 && e.deadline > e.interval {
