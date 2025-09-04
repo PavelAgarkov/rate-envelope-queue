@@ -325,10 +325,14 @@ func (q *RateEnvelopeQueue) Send(envelopes ...*Envelope) error {
 	for {
 		s := q.currentState()
 		switch s {
-		case stateInit:
+		case stateInit, stateStopped:
 			q.pendingMu.Lock()
 			// повторная проверка состояния под локом
-			if q.currentState() == stateInit {
+			if q.currentState() == stateInit || q.currentState() == stateStopped {
+				// в init/stopped — буферизуем, если есть место
+				// (в stopped — на случай, если очередь остановлена и потом снова запущена)
+				// в stopped буфер не чистим, т.к. может быть повторный старт
+				// проверяем вместимость
 				if !q.tryReserve(need) {
 					q.pendingMu.Unlock()
 					return ErrAllowedQueueCapacityExceeded
