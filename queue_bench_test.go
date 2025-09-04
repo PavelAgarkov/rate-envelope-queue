@@ -107,3 +107,17 @@ func BenchmarkQueueInterval(b *testing.B) {
 		}
 	}
 }
+
+/*
+Benchmark results (user-reported)
+
+$ go test -bench=BenchmarkQueueFull -benchmem
+  4874815               315.0 ns/op            18 B/op          1 allocs/op
+PASS
+ok      github.com/PavelAgarkov/rate-envelope-queue     1.796s
+
+$ go test -bench=BenchmarkQueueInterval -benchmem
+    97928             13335 ns/op            1715 B/op         22 allocs/op
+PASS
+ok      github.com/PavelAgarkov/rate-envelope-queue     2.297s
+*/

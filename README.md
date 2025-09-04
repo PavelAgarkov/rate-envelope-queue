@@ -1,62 +1,41 @@
 # rate-envelope-queue
 
-Лёгкий пакет для управления пулом задач (**envelopes**) поверх `k8s.io/client-go/util/workqueue` с ограничением
-параллелизма, ретраями, периодическим планированием, **stamps (middleware)** и хуками до/после выполнения.
+Лёгкая обёртка над `k8s.io/client-go/util/workqueue` для управления задачами (**envelopes**) с фиксированным пулом воркеров, периодическим планированием, дедлайнами, хуками и **stamps (middleware)**. Добавляет безопасный жизненный цикл очереди (**Start/Stop/Start**), буферизацию задач до старта и ограничение ёмкости очереди.
 
-> Основано на `workqueue` из client-go: очередь дедуплицирует одинаковые элементы (один и тот же **указатель**) и
-> поддерживает rate-limiting / отложенное перепланирование.
+> В основе — `workqueue.TypedRateLimitingInterface`. Дедупликация происходит по **указателю** на элемент: повторный `Add` того же *указателя* пока он в обработке — игнорируется.
 
 ---
 
-## Что нового в API
+## Содержание
 
-- **Builder-подход для Envelope** — поля неэкспортируемые, настройка через `NewEnvelope(opts...)` и `With*`-опции:
-  ```go
-  e := NewEnvelope(
-      WithId(1),
-      WithType("email"),
-      WithInterval(5*time.Second),
-      WithDeadline(3*time.Second),
-      WithBeforeHook(func(ctx context.Context, e *Envelope) error { return nil }),
-      WithInvoke(func(ctx context.Context) error { return nil }),
-      WithAfterHook(func(ctx context.Context, e *Envelope) error { return nil }),
-      WithStampsPerEnvelope(/* per-envelope stamps */),
-  )
-  ```
-  Для чтения используйте геттеры: `GetId()`, `GetType()`, `GetStamps()`.
-
-- **Stamps разделены на глобальные и per-envelope**:
-    - Глобальные — через `WithStamps(...)` в конструкторе очереди.
-    - Per-envelope — через `WithStampsPerEnvelope(...)` в `NewEnvelope(...)`.
-    - Порядок исполнения: **сначала глобальные, затем per-envelope** (глобальные — внешние).
-
-- **Тайм‑бюджеты для хуков** в `BeforeAfterStamp`: по умолчанию рекомендуем `frac=0.5` и `min=800ms` →
-  `max(50% от deadline, 800ms)`.
+- [Ключевые возможности](#ключевые-возможности)
+- [Установка](#установка)
+- [Быстрый старт](#быстрый-старт)
+- [Концепции и контракты](#концепции-и-контракты)
+    - [Envelope](#envelope)
+    - [Очередь](#очередь)
+    - [Stamps (middleware)](#stamps-middleware)
+- [Поведение воркера](#поведение-воркера)
+- [Режимы остановки](#режимы-остановки)
+- [Ограничение ёмкости](#ограничение-ёмкости)
+- [Бенчмарки](#бенчмарки)
+- [Метрики (Prometheus)](#метрики-prometheus)
+- [Примеры](#примеры)
+- [Лицензия](#лицензия)
 
 ---
 
-## Возможности
+## Ключевые возможности
 
-- **Фиксированный пул воркеров**: параллелизм через `WithLimitOption`.
-- **Периодические и одноразовые задачи**: `interval > 0` → периодические; `interval == 0` → одноразовые.
-- **Дедлайны**: `deadline > 0` ограничивает время выполнения `invoke` (оборачивается таймаутом в воркере).
-- **Хуки**: `beforeHook` / `afterHook` с отдельным тайм-бюджетом (через `BeforeAfterStamp(WithHookTimeout)`).
-- **Stamps (middleware)**: глобальные и per-envelope; компонуются в цепочку (**chain**).
-- **Остановка типа**: `ErrStopEnvelope` из любого места (`beforeHook`/`invoke`/`afterHook`) кладёт `_type` в **blacklist
-  **.
-- **Backoff/ретраи**: дефолтный лимитер = `MaxOf(Exponential(1s..30s), TokenBucket(5 rps, burst=10))`.
-- **Грациозная остановка**: режимы `Drain`/`Stop`.
-- **Безопасность при паниках**: паника внутри обработки **конверта** → `Forget+Done` и лог стека; паника воркера также
-  перехватывается.
-
----
-
-## Требования
-
-- Go Рекомендовано **1.22+** (`atomic.Bool`).
-- Модули:
-    - `k8s.io/client-go/util/workqueue`
-    - `golang.org/x/time/rate`
+- **Пул воркеров**: настраивается через `WithLimitOption(n)`.
+- **Start/Stop/Start**: очередь можно **перезапускать**; задачи, добавленные до первого `Start()`, буферизуются и заливаются в очередь при старте.
+- **Периодические / одноразовые задачи**: `interval > 0` → периодическая; `interval == 0` → одноразовая.
+- **Дедлайны**: `deadline > 0` ограничивает время исполнения `invoke` (через `context.WithTimeout` в воркере).
+- **Хуки**: `beforeHook`, `afterHook`, `failureHook`, `successHook`.
+- **Stamps (middleware)**: глобальные (для очереди) и per-envelope (для задачи) с предсказуемым порядком выполнения.
+- **Ограничение ёмкости**: `WithAllowedCapacityOption(cap)` — защита от переполнения очереди; `Send()` вернёт `ErrAllowedQueueCapacityExceeded`, если лимит превышен.
+- **Безопасность при паниках**: паника внутри задачи → `Forget+Done` и лог со стеком; воркер не падает.
+- **Метрики workqueue**: экспорт Prometheus метрик из `client-go`.
 
 ---
 
@@ -66,172 +45,219 @@
 go get github.com/PavelAgarkov/rate-envelope-queue
 ```
 
-```go
-import "github.com/PavelAgarkov/rate-envelope-queue"
+Рекомендуемые пин-версии (совместимы с кодом):
+
+```bash
+go get k8s.io/client-go@v0.34.0
+go get k8s.io/component-base@v0.34.0
 ```
+
+**Требования:** Go **1.24+**.
 
 ---
 
 ## Быстрый старт
+
+Полные варианты, в том числе с облегченным интерфейсом, смотрите в каталоге [`examples/`](./examples):
+
+- `queue_with_simple_start_stop_dynamic_execute.go`
+- `simple_queue_with_simple_preset_envelopes.go`
+- `simple_queue_with_simple_schedule_envelopes.go`
+- `simple_queue_with_simple_dynamic_envelopes.go`
+- `simple_queue_with_simple_combine_envelopes.go`
+
+Мини‑пример (схема API):
 
 ```go
 ctx, cancel := context.WithCancel(context.Background())
 defer cancel()
 
 q := NewRateEnvelopeQueue(
-WithLimitOption(3), // 3 воркера
-WithWaitingOption(true), // ждать завершения горутин при Stop()
-WithStopModeOption(Drain),
-WithStamps(                   // глобальные stamps (внешние)
-BeforeAfterStamp(WithHookTimeout), // 50% от deadline, минимум 800ms
-LoggingStamp(log.Default()),
-),
+    ctx,
+    "emails",
+    WithLimitOption(4),
+    WithWaitingOption(true),
+    WithStopModeOption(Drain),
+    WithAllowedCapacityOption(1000),
+    WithStamps(LoggingStamp()),
 )
 
-email := NewEnvelope(
-WithId(1),
-WithType("email"),
-WithInterval(5*time.Second),
-WithDeadline(3*time.Second),
-WithBeforeHook(func (ctx context.Context, e *Envelope) error {
-fmt.Println("before:", e.GetId(), time.Now())
-return nil
-}),
-WithInvoke(func (ctx context.Context) error {
-// имитируем работу; уважайте ctx.Done()
-time.Sleep(5 * time.Second)
-fmt.Println("invoke email", time.Now())
-return nil
-}),
-WithAfterHook(func (ctx context.Context, e *Envelope) error {
-fmt.Println("after:", e.GetId(), time.Now())
-// Остановим дальнейшие email
-return ErrStopEnvelope
-}),
+emailOnce, _ := NewEnvelope(
+    WithId(1),
+    WithType("email"),
+    WithScheduleModeInterval(0),          // одноразовая
+    WithDeadline(3*time.Second),
+    WithInvoke(func(ctx context.Context, e *Envelope) error { return nil }),
 )
 
-metrics := NewEnvelope(
-WithId(2),
-WithType("metrics"),
-WithInterval(3*time.Second),
-WithDeadline(1*time.Second),
-WithInvoke(func (ctx context.Context) error {
-fmt.Println("metrics tick", time.Now())
-return nil
-}),
+ticker, _ := NewEnvelope(
+    WithId(2),
+    WithType("metrics"),
+    WithScheduleModeInterval(5*time.Second), // периодическая
+    WithDeadline(2*time.Second),
+    WithInvoke(func(ctx context.Context, e *Envelope) error { return nil }),
 )
 
-q.Start(ctx)
-_ = q.Add(email, metrics)
+q.Start()
+_ = q.Send(emailOnce, ticker)
 
-time.AfterFunc(25*time.Second, cancel)
-<-ctx.Done()
+// ...
+q.Stop()
+q.Start() // при необходимости можно снова стартовать
+```
 
+---
+
+## Концепции и контракты
+
+### Envelope
+
+```go
+e, err := NewEnvelope(
+    WithId(123),
+    WithType("my_task"),
+    WithScheduleModeInterval(time.Second), // 0 = одноразовая
+    WithDeadline(500*time.Millisecond),    // 0 = без таймаута
+    WithBeforeHook(func(ctx context.Context, e *Envelope) error { return nil }),
+    WithInvoke(func(ctx context.Context, e *Envelope) error { return nil }),
+    WithAfterHook(func(ctx context.Context, e *Envelope) error { return nil }),
+    WithFailureHook(func(ctx context.Context, e *Envelope, err error) Decision {
+        return DefaultOnceDecision() // drop
+    }),
+    WithSuccessHook(func(ctx context.Context, e *Envelope) {}),
+    WithStampsPerEnvelope(LoggingStamp()),
+    WithPayload(myPayload),
+)
+```
+
+Валидация:
+- `invoke` обязателен; `interval >= 0`; `deadline >= 0`.
+- Для периодических задач: `deadline` **не должен превышать** `interval` → `ErrAdditionEnvelopeToQueueBadIntervals`.
+
+Спец‑ошибка:
+- `ErrStopEnvelope` — корректно прекращает **только этот конверт** (без перепланирования).
+
+### Очередь
+
+```go
+q := NewRateEnvelopeQueue(ctx, "queue-name",
+    WithLimitOption(n),
+    WithWaitingOption(true|false),
+    WithStopModeOption(Drain|Stop),
+    WithAllowedCapacityOption(cap),         // 0 = без лимита
+    WithWorkqueueConfigOption(conf),        // workqueue.TypedRateLimitingQueueConfig
+    WithLimiterOption(limiter),             // свой rate limiter при необходимости
+    WithStamps(stamps...),                  // глобальные stamps (наружные)
+)
+q.Start()
+err := q.Send(e1, e2, e3)                   // ErrAllowedQueueCapacityExceeded при переполнении
 q.Stop()
 ```
 
----
+**Буфер до старта.** В состоянии `init` вызовы `Send()` складывают задачи во внутренний буфер; при `Start()` — они переливаются в `workqueue`.
 
-## Поведение очереди
+### Stamps (middleware)
 
-| Сценарий                                                      | Действие очереди                                                 |
-|---------------------------------------------------------------|------------------------------------------------------------------|
-| `invoke` вернул `nil`                                         | `Forget`; если `interval > 0` → `AddAfter(interval)`             |
-| Контекст задачи истёк/отменён (`DeadlineExceeded`/`Canceled`) | `Forget`; если периодическая → `AddAfter(interval)`              |
-| `ErrStopEnvelope` (из `beforeHook`/`invoke`/`afterHook`)      | `Forget` + поместить `_type` в **blacklist**                     |
-| Ошибка в `beforeHook` (не `ErrStopEnvelope`)                  | Периодические: `AddRateLimited`; одноразовые: `Forget`           |
-| Ошибка в `invoke` (не `ErrStopEnvelope`)                      | Периодические: `AddRateLimited`; одноразовые: `Forget`           |
-| Ошибка в `afterHook` (не `ErrStopEnvelope`)                   | Возвращается наверх → те же правила, что и для обычной ошибки    |
-| Паника внутри обработки элемента                              | Элемент `Forget+Done`, стек логируется; воркер продолжает работу |
+```go
+type (
+    Invoker  func(ctx context.Context, envelope *Envelope) error
+    Stamp    func(next Invoker) Invoker
+)
+```
 
-> Валидация: для периодических задач `deadline` **не должен превышать** `interval` — иначе
-`ErrAdditionEnvelopeToQueueBadIntervals`.
+Порядок: **сначала глобальные** stamps (внешние), затем **per‑envelope** (внутренние), после чего — `Envelope.invoke`.
 
----
-
-## Stamps (middleware)
-
-Stamps — это обёртки вокруг `Invoker` (обработчика конверта).
-
-- **Глобальные stamps** — задаются на очередь через `WithStamps(...)`.
-- **Per-envelope stamps** — через `WithStampsPerEnvelope(...)` в `NewEnvelope(...)`.
-
-Порядок: глобальные идут **первее** и становятся **внешними** (самыми «оборачивающими»), затем per-envelope — *
-*внутренние**.
-
-### Встроенные stamps
-
-- `BeforeAfterStamp(withTimeout)` — исполняет `beforeHook` и `afterHook` с отдельными тайм-бюджетами; любые ошибки,
-  кроме `ErrStopEnvelope`, **возвращаются** наверх. Рекомендуемая функция тайм-бюджета:  
-  `WithHookTimeout(ctx, base=deadline, frac=0.5, min=800ms)` → `max(50% от deadline, 800ms)`.
-- `LoggingStamp(l *log.Logger)` — логирует длительность и ошибку обработки конверта.
+В комплекте есть `LoggingStamp()`.
 
 ---
 
-## Публичные функции и опции
+## Поведение воркера
 
-### Конструктор и геттеры
+| Событие / результат                     | Действие очереди                                                                     |
+|-----------------------------------------|--------------------------------------------------------------------------------------|
+| `invoke` вернул `nil`                   | `Forget`; если `interval > 0` и очередь «жива» → `AddAfter(interval)`                |
+| `context.Canceled` / `DeadlineExceeded` | `Forget`; если периодическая и очередь «жива» → `AddAfter(interval)`                 |
+| `ErrStopEnvelope`                       | `Forget`; **не** перепланируем                                                       |
+| Ошибка у **периодической**              | `Forget`; если очередь «жива» → `AddAfter(interval)`                                 |
+| Ошибка у **одноразовой** + `failureHook`| Решение пользователя: `RetryNow` / `RetryAfter(d)` / `Drop`                          |
+| Паника в задаче                         | `Forget + Done` + лог стека; воркер продолжает работу                                |
 
-```go
-e := NewEnvelope(opts...)
-
-id := e.GetId()
-name := e.GetType()
-st := e.GetStamps()
-```
-
-### Опции `Envelope`
-
-```go
-WithId(id uint64)
-WithType(t string)
-WithInterval(d time.Duration) // 0 = одноразовая задача
-WithDeadline(d time.Duration) // 0 = без таймаута
-WithBeforeHook(func(ctx context.Context, e *Envelope) error)
-WithInvoke(func (ctx context.Context) error)
-WithAfterHook(func (ctx context.Context, e *Envelope) error)
-WithStampsPerEnvelope(stamps ...Stamp)
-```
-
-### Опции очереди
-
-```go
-WithLimitOption(n) // число воркеров (>0)
-WithWaitingOption(true|false)             // ждать ли завершения воркеров в Stop()
-WithStopModeOption(Drain|Stop)
-WithLimiterOption(customLimiter) // если не задан — дефолтный
-WithWorkqueueConfigOption(conf)  // конфиг workqueue
-WithStamps(stamps...) // глобальные stamps
-```
-
-### Ошибки
-
-```go
-ErrStopEnvelope                        // поместить `_type` в blacklist
-ErrEnvelopeInBlacklist                 // попытка добавить тип из blacklist
-ErrEnvelopeQueueIsNotRunning           // Add до Start/после Stop
-ErrAdditionEnvelopeToQueueBadFields    // пустой тип / nil invoke / отрицательные интервалы
-ErrAdditionEnvelopeToQueueBadIntervals // deadline > interval для периодических
-```
+> «Очередь жива» = флаг `run == true`, `state == running`, базовый контекст не завершён и `workqueue` не в shutdown.
 
 ---
 
-## Эксплуатационные заметки
+## Режимы остановки
 
-- **Один объект — один запуск**: текущая реализация рассчитана на одноразовый жизненный цикл `Start/Stop`. Для
-  повторного использования создайте **новый объект** очереди.
-- **Дедупликация**: для указателей — по адресу. Не «переиспользуйте» один и тот же указатель для разных логических
-  задач.
-- **Jitter**: чтобы периодические задачи не «стреляли строем», можно добавить случайный сдвиг к `AddAfter`.
-- **Соблюдайте контекст** в `invoke`/хуках: долгие операции должны уважать `ctx.Done()`; иначе получится «карусель»
-  таймаутов с перепланированием.
+| Waiting \ StopMode | `Drain` (мягкая)                                   | `Stop` (жёсткая)                           |
+|---------------------|-----------------------------------------------------|--------------------------------------------|
+| `true`              | Ждать воркеров; `ShutDownWithDrain()`               | Ждать воркеров; `ShutDown()`               |
+| `false`             | Без ожидания воркеров; `ShutDownWithDrain()`        | **Мгновенная** остановка; `ShutDown()`     |
+
+После `Stop()` можно вызывать `Start()` повторно: создаётся новый внутренний `workqueue`.
+
+---
+
+## Ограничение ёмкости
+
+`WithAllowedCapacityOption(cap)` — ограничивает суммарное количество элементов в очереди (включая перепланированные).  
+При попытке превышения лимита `Send()` вернёт `ErrAllowedQueueCapacityExceeded`.  
+Счётчик текущей ёмкости обновляется при добавлении, перепланировании и завершении обработки.
+
+---
+
+## Бенчмарки
+
+Повторяемые команды:
+
+```bash
+go test -bench=BenchmarkQueueFull -benchmem
+go test -bench=BenchmarkQueueInterval -benchmem
+```
+
+Результаты, предоставленные пользователем (окружение/CPU могут влиять на цифры):
+
+```
+$ go test -bench=BenchmarkQueueFull -benchmem
+  4874815               315.0 ns/op            18 B/op          1 allocs/op
+PASS
+ok      github.com/PavelAgarkov/rate-envelope-queue     1.796s
+```
+
+```
+$ go test -bench=BenchmarkQueueInterval -benchmem
+    97928             13335 ns/op            1715 B/op         22 allocs/op
+PASS
+ok      github.com/PavelAgarkov/rate-envelope-queue     2.297s
+```
+
+Краткая интерпретация:
+- **`BenchmarkQueueFull`** — добавление одноразового конверта с пустыми хуками: ~315 нс/операцию, 1 аллокация.
+- **`BenchmarkQueueInterval`** — активная перепланировка (`AddAfter`) множества периодических задач: ~13.3 мкс/операцию, ожидаемо больше аллокаций за счёт таймеров и внутренних структур.
+
+---
+
+## Метрики (Prometheus)
+
+Метрики `workqueue` регистрируются бланк‑импортом:
+
+```go
+import (
+    _ "k8s.io/component-base/metrics/prometheus/workqueue"
+    "k8s.io/component-base/metrics/legacyregistry"
+    "net/http"
+)
+
+func serveMetrics() {
+    mux := http.NewServeMux()
+    mux.Handle("/metrics", legacyregistry.Handler())
+    go http.ListenAndServe(":8080", mux)
+}
+```
+
+Имя очереди (`QueueConfig.Name`) попадает в лейблы метрик (`workqueue_*`: adds, depth, work_duration, retries и т.д.).
 
 ---
 
 ## Лицензия
 
-MIT
-
----
-
-**Префикс логов:** `"[rate-envelope-queue]"`.
+MIT — см. [`LICENSE`](./LICENSE).
