@@ -23,6 +23,11 @@ const (
 	stateStopped                    // остановлена; Add() — ошибка; возможен повторный Start()
 )
 
+const (
+	hardHookLimit = 800 * time.Millisecond
+	frac          = 0.5
+)
+
 type RateEnvelopeQueue struct {
 	name string
 	ctx  context.Context
@@ -189,24 +194,47 @@ func (q *RateEnvelopeQueue) worker(ctx context.Context) {
 			}
 			defer tcancel()
 
-			var err error
+			var important error = nil
 			if envelope.beforeHook != nil {
-				hctx, cancel := withHookTimeout(ctx, envelope.deadline, 0.5, 800*time.Millisecond)
-				err = envelope.beforeHook(hctx, envelope)
+				hctx, cancel := withHookTimeout(ctx, envelope.deadline, frac, hardHookLimit)
+				important = envelope.beforeHook(hctx, envelope)
 				cancel()
+				if important != nil {
+					if errors.Is(important, ErrStopEnvelope) && envelope.afterHook != nil {
+						hctx, cancel := withHookTimeout(ctx, envelope.deadline, frac, hardHookLimit)
+						_ = envelope.afterHook(hctx, envelope) // ignore result
+						cancel()
+					}
+					goto handle
+				}
 			}
 
-			invoker := q.buildInvokerChain(envelope)
-			err = invoker(tctx, envelope)
+			{
+				invoker := q.buildInvokerChain(envelope)
+				important = invoker(tctx, envelope)
+				if important != nil {
+					if errors.Is(important, ErrStopEnvelope) && envelope.afterHook != nil {
+						hctx, cancel := withHookTimeout(ctx, envelope.deadline, frac, hardHookLimit)
+						_ = envelope.afterHook(hctx, envelope) // ignore result
+						cancel()
+					}
+					goto handle
+				}
+			}
 
 			if envelope.afterHook != nil {
-				hctx, cancel := withHookTimeout(ctx, envelope.deadline, 0.5, 800*time.Millisecond)
-				err = envelope.afterHook(hctx, envelope)
+				hctx, cancel := withHookTimeout(ctx, envelope.deadline, frac, hardHookLimit)
+				important = envelope.afterHook(hctx, envelope)
 				cancel()
+				if important != nil && !errors.Is(important, ErrStopEnvelope) {
+					important = nil // игнорим всё, кроме стопа
+				}
+				goto handle
 			}
 
-			if err == nil && tctx.Err() != nil {
-				err = tctx.Err()
+		handle:
+			if important == nil && tctx.Err() != nil {
+				important = tctx.Err()
 			}
 
 			alive := q.run.Load() && q.ctx != nil && q.ctx.Err() == nil &&
@@ -214,8 +242,9 @@ func (q *RateEnvelopeQueue) worker(ctx context.Context) {
 
 			switch {
 			// отмена/таймаут — забыть и, если периодическая и очередь жива, перепланировать
-			case errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded):
+			case errors.Is(important, context.Canceled) || errors.Is(important, context.DeadlineExceeded):
 				queue.Forget(envelope)
+
 				if envelope.interval > 0 && alive {
 					queue.AddAfter(envelope, envelope.interval)
 					q.inc(1)
@@ -223,15 +252,17 @@ func (q *RateEnvelopeQueue) worker(ctx context.Context) {
 				return nil
 
 			// ErrStopEnvelope — забыть и не перепланировать. Ошибка от пользователя о том, что задача больше не нужна
-			case errors.Is(err, ErrStopEnvelope):
+			case errors.Is(important, ErrStopEnvelope):
 				queue.Forget(envelope)
+
 				return nil
 
 			// любая другая ошибка — перепланировать (если периодическая и очередь жива) и, если одиночная, вызвать failureHook (если есть) и реагировать
 			//на ответ пользователя через DestinationResult
-			case err != nil:
+			case important != nil:
+				queue.Forget(envelope)
+
 				if envelope.interval > 0 && alive {
-					queue.Forget(envelope)
 					queue.AddAfter(envelope, envelope.interval)
 					q.inc(1)
 				}
@@ -240,7 +271,9 @@ func (q *RateEnvelopeQueue) worker(ctx context.Context) {
 				if envelope.interval == 0 && envelope.failureHook != nil {
 					// на этот хук даем общее время дедлайна, важная часть. Нужно дать возомжность отправить
 					//ошибку в сторонний сервис. Снаружи пользователь управляет временем через deadline
-					decision := envelope.failureHook(tctx, envelope, err)
+					hctx, cancel := withHookTimeout(ctx, envelope.deadline, frac, hardHookLimit)
+					decision := envelope.failureHook(hctx, envelope, important)
+					cancel()
 
 					if decision == nil {
 						decision = DefaultOnceDecision()
@@ -279,9 +312,6 @@ func (q *RateEnvelopeQueue) worker(ctx context.Context) {
 						case DecisionStateDrop:
 						}
 					}
-
-					queue.Forget(envelope)
-
 				}
 				return nil
 
@@ -292,7 +322,7 @@ func (q *RateEnvelopeQueue) worker(ctx context.Context) {
 					q.inc(1)
 				}
 				if envelope.successHook != nil {
-					hctx, cancel := withHookTimeout(ctx, envelope.deadline, 0.5, 800*time.Millisecond)
+					hctx, cancel := withHookTimeout(ctx, envelope.deadline, frac, hardHookLimit)
 					envelope.successHook(hctx, envelope)
 					cancel()
 				}
@@ -349,16 +379,29 @@ func (q *RateEnvelopeQueue) Send(envelopes ...*Envelope) error {
 			if !q.tryReserve(need) {
 				return ErrAllowedQueueCapacityExceeded
 			}
-			q.queueMu.RLock()
-			local := q.queue
-			q.queueMu.RUnlock()
-			if local == nil {
+
+			q.lifecycleMu.Lock()
+			// повторная проверка под той же блокировкой, что и Stop/Start
+			if q.currentState() != stateRunning {
+				q.lifecycleMu.Unlock()
 				q.unreserve(need)
 				return ErrEnvelopeQueueIsNotRunning
 			}
+
+			q.queueMu.RLock()
+			local := q.queue
+			shutting := local == nil || local.ShuttingDown()
+			q.queueMu.RUnlock()
+			if shutting {
+				q.lifecycleMu.Unlock()
+				q.unreserve(need)
+				return ErrEnvelopeQueueIsNotRunning
+			}
+
 			for _, e := range envelopes {
 				local.Add(e)
 			}
+			q.lifecycleMu.Unlock()
 			return nil
 
 		default:
@@ -371,7 +414,7 @@ func (q *RateEnvelopeQueue) Start() {
 	q.lifecycleMu.Lock()
 	defer q.lifecycleMu.Unlock()
 
-	switch q.state {
+	switch q.currentState() {
 	case stateRunning:
 		return
 	case stateStopping:
@@ -424,7 +467,7 @@ func (q *RateEnvelopeQueue) Start() {
 func (q *RateEnvelopeQueue) Stop() {
 	// Переводим состояние
 	q.lifecycleMu.Lock()
-	if q.state != stateRunning {
+	if q.currentState() != stateRunning {
 		q.lifecycleMu.Unlock()
 		return
 	}
@@ -451,6 +494,23 @@ func (q *RateEnvelopeQueue) Stop() {
 		q.wg.Wait()
 	}
 
+	if local != nil && q.stopMode == Stop {
+		if q.waiting {
+			// здесь уже прошёл wg.Wait(), in-flight обнулились dec()
+			q.pendingMu.Lock()
+			pend := uint64(len(q.pending))
+			q.pendingMu.Unlock()
+
+			cur := q.currentCapacity.Load()
+			if cur > pend {
+				q.unreserve(cur - pend)
+			}
+		} else {
+			// ничего не делаем: остаток снимут dec() от in-flight,
+			// но «хвост» (queued/delayed) подтечёт — документируйте это.
+		}
+	}
+
 	// Теперь можно финализировать состояние и обнулить публикуемую ссылку
 	q.lifecycleMu.Lock()
 	q.setState(stateStopped)
@@ -460,27 +520,13 @@ func (q *RateEnvelopeQueue) Stop() {
 	q.queue = nil
 	q.queueMu.Unlock()
 
-	if q.stopMode == Stop {
-		q.currentCapacity.Store(0)
-	}
-
-	if q.stopMode == Drain {
-		if v := q.currentCapacity.Load(); v != 0 {
-			q.currentCapacity.Store(0)
-		}
-	}
-
 	log.Printf(service + ": queue is drained/stopped")
 }
 
 func (q *RateEnvelopeQueue) tryReserve(n uint64) bool {
-	if q.allowedCapacity == 0 {
-		// без ограничений
-		return true
-	}
 	for {
 		cur := q.currentCapacity.Load()
-		if cur+n > q.allowedCapacity {
+		if q.allowedCapacity != 0 && cur+n > q.allowedCapacity {
 			return false
 		}
 		if q.currentCapacity.CompareAndSwap(cur, cur+n) {
@@ -525,7 +571,8 @@ func WithStopModeOption(mode StopMode) func(*RateEnvelopeQueue) {
 func WithWorkqueueConfigOption(conf *workqueue.TypedRateLimitingQueueConfig[*Envelope]) func(*RateEnvelopeQueue) {
 	return func(q *RateEnvelopeQueue) {
 		if conf != nil {
-			q.workqueueConf = conf
+			c := *conf
+			q.workqueueConf = &c
 		}
 	}
 }

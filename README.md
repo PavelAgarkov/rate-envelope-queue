@@ -68,6 +68,43 @@ go get k8s.io/component-base@v0.34.0
 
 Мини‑пример (схема API):
 
+Коротко: текущая схема учёта емкости корректна для:
+Drain + waiting=true — корректно: дожидаемся всех воркеров, все dec() проходят, остатка нет.
+```go
+envelopeQueue := NewRateEnvelopeQueue(
+    parent,
+    "test_queue",
+    WithLimitOption(5),
+    WithWaitingOption(true),
+    WithStopModeOption(Drain),
+    WithAllowedCapacityOption(50),
+)
+```
+
+Stop + waiting=true — корректно: после wg.Wait() снимается резерв «хвоста» (cur - pend), счётчик сходится.
+```go
+envelopeQueue := NewRateEnvelopeQueue(
+    parent,
+    "test_queue",
+    WithLimitOption(5),
+    WithWaitingOption(true),
+    WithStopModeOption(Stop),
+    WithAllowedCapacityOption(50),
+)
+```
+
+Безлимитная ёмкость — при WithAllowedCapacityOption(0) ограничений на приём нет, но метрика currentCapacity продолжает отражать фактическую занятость.
+```go
+envelopeQueue := NewRateEnvelopeQueue(
+    parent,
+    "test_queue",
+    WithLimitOption(5),
+    WithWaitingOption(true),
+    WithStopModeOption(Drain),
+    WithAllowedCapacityOption(0),
+)
+```
+
 ```go
 ctx, cancel := context.WithCancel(context.Background())
 defer cancel()
