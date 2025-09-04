@@ -471,6 +471,7 @@ func (q *RateEnvelopeQueue) Stop() {
 
 func (q *RateEnvelopeQueue) tryReserve(n uint64) bool {
 	if q.allowedCapacity == 0 {
+		// без ограничений
 		return true
 	}
 	for {

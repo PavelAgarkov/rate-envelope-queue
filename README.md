@@ -114,19 +114,21 @@ q.Start() // при необходимости можно снова старт�
 
 ```go
 e, err := NewEnvelope(
-    WithId(123),
-    WithType("my_task"),
+    WithId(123), // опционально, для логов
+    WithType("my_task"), // опционально, для логов
     WithScheduleModeInterval(time.Second), // 0 = одноразовая
-    WithDeadline(500*time.Millisecond),    // 0 = без таймаута
-    WithBeforeHook(func(ctx context.Context, e *Envelope) error { return nil }),
-    WithInvoke(func(ctx context.Context, e *Envelope) error { return nil }),
-    WithAfterHook(func(ctx context.Context, e *Envelope) error { return nil }),
-    WithFailureHook(func(ctx context.Context, e *Envelope, err error) Decision {
+    WithDeadline(500*time.Millisecond), // 0 = без дедлайна
+    WithBeforeHook(func(ctx context.Context, e *Envelope) error { return nil }), // до invoke
+    WithInvoke(func(ctx context.Context, e *Envelope) error { return nil }), // обязательно
+    WithAfterHook(func(ctx context.Context, e *Envelope) error { return nil }), // после invoke
+    WithFailureHook(func(ctx context.Context, e *Envelope, err error) Decision { // при ошибке в invoke сюда падают ошибки и envelope
         return DefaultOnceDecision() // drop
+		//return RetryOnceAfterDecision(5 * time.Second) // перепланировать через 5 секунд
+        //return RetryOnceNowDecision() // перепланировать сразу
     }),
-    WithSuccessHook(func(ctx context.Context, e *Envelope) {}),
-    WithStampsPerEnvelope(LoggingStamp()),
-    WithPayload(myPayload),
+    WithSuccessHook(func(ctx context.Context, e *Envelope) {}), // при успехе
+    WithStampsPerEnvelope(LoggingStamp()), // штампы только для этой задачи
+    WithPayload(myPayload), // опционально, для пользовательских данных
 )
 ```
 
@@ -141,9 +143,9 @@ e, err := NewEnvelope(
 
 ```go
 q := NewRateEnvelopeQueue(ctx, "queue-name",
-    WithLimitOption(n),
-    WithWaitingOption(true|false),
-    WithStopModeOption(Drain|Stop),
+    WithLimitOption(n), // число воркеров > 0
+    WithWaitingOption(true|false), // ждать воркеров при остановке или нет
+    WithStopModeOption(Drain|Stop), // мягкая или жёсткая остановка
     WithAllowedCapacityOption(cap),         // 0 = без лимита
     WithWorkqueueConfigOption(conf),        // workqueue.TypedRateLimitingQueueConfig
     WithLimiterOption(limiter),             // свой rate limiter при необходимости
@@ -167,7 +169,7 @@ type (
 
 Порядок: **сначала глобальные** stamps (внешние), затем **per‑envelope** (внутренние), после чего — `Envelope.invoke`.
 
-В комплекте есть `LoggingStamp()`.
+В комплекте есть `LoggingStamp()`. - Скорее для примера, чем для продакшена.
 
 ---
 
