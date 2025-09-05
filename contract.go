@@ -8,10 +8,10 @@ import (
 
 var (
 	ErrStopEnvelope                        = errors.New(fmt.Sprintf("%s: stop envelope", service))
-	ErrEnvelopeInBlacklist                 = errors.New(fmt.Sprintf("%s: envelope is in blacklist", service))
 	ErrEnvelopeQueueIsNotRunning           = errors.New(fmt.Sprintf("%s: queue is not running", service))
 	ErrAdditionEnvelopeToQueueBadFields    = errors.New(fmt.Sprintf("%s: addition envelope to queue has bad fields", service))
 	ErrAdditionEnvelopeToQueueBadIntervals = errors.New(fmt.Sprintf("%s: addition envelope to queue has bad intervals", service))
+	ErrAllowedQueueCapacityExceeded        = errors.New(fmt.Sprintf("%s: allowed queue capacity exceeded", service))
 )
 
 type (
@@ -27,8 +27,10 @@ const (
 	service = "[rate-envelope-queue]"
 )
 
-type QueuePool interface {
-	Start(ctx context.Context)
-	Add(envelopes ...*Envelope) error
-	Stop()
-}
+type (
+	SingleQueuePool interface {
+		Send(envelopes ...*Envelope) error
+		Start()
+		Stop()
+	}
+)
