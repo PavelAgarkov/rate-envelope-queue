@@ -2,10 +2,11 @@ package tests
 
 import (
 	"context"
-	req "github.com/PavelAgarkov/rate-envelope-queue"
-	"github.com/stretchr/testify/assert"
 	"testing"
 	"time"
+
+	req "github.com/PavelAgarkov/rate-envelope-queue"
+	"github.com/stretchr/testify/assert"
 )
 
 func TestEnvelopeAddingToQueue(t *testing.T) {

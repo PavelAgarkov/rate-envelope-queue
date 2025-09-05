@@ -196,12 +196,12 @@ func (q *RateEnvelopeQueue) worker(ctx context.Context) {
 
 			var important error = nil
 			if envelope.beforeHook != nil {
-				hctx, cancel := withHookTimeout(ctx, envelope.deadline, frac, hardHookLimit)
+				hctx, cancel := withHookTimeout(tctx, envelope.deadline, frac, hardHookLimit)
 				important = envelope.beforeHook(hctx, envelope)
 				cancel()
 				if important != nil {
 					if errors.Is(important, ErrStopEnvelope) && envelope.afterHook != nil {
-						hctx, cancel := withHookTimeout(ctx, envelope.deadline, frac, hardHookLimit)
+						hctx, cancel := withHookTimeout(tctx, envelope.deadline, frac, hardHookLimit)
 						_ = envelope.afterHook(hctx, envelope) // ignore result
 						cancel()
 					}
@@ -214,7 +214,7 @@ func (q *RateEnvelopeQueue) worker(ctx context.Context) {
 				important = invoker(tctx, envelope)
 				if important != nil {
 					if errors.Is(important, ErrStopEnvelope) && envelope.afterHook != nil {
-						hctx, cancel := withHookTimeout(ctx, envelope.deadline, frac, hardHookLimit)
+						hctx, cancel := withHookTimeout(tctx, envelope.deadline, frac, hardHookLimit)
 						_ = envelope.afterHook(hctx, envelope) // ignore result
 						cancel()
 					}
@@ -223,7 +223,7 @@ func (q *RateEnvelopeQueue) worker(ctx context.Context) {
 			}
 
 			if envelope.afterHook != nil {
-				hctx, cancel := withHookTimeout(ctx, envelope.deadline, frac, hardHookLimit)
+				hctx, cancel := withHookTimeout(tctx, envelope.deadline, frac, hardHookLimit)
 				important = envelope.afterHook(hctx, envelope)
 				cancel()
 				if important != nil && !errors.Is(important, ErrStopEnvelope) {
@@ -271,7 +271,7 @@ func (q *RateEnvelopeQueue) worker(ctx context.Context) {
 				if envelope.interval == 0 && envelope.failureHook != nil {
 					// на этот хук даем общее время дедлайна, важная часть. Нужно дать возомжность отправить
 					//ошибку в сторонний сервис. Снаружи пользователь управляет временем через deadline
-					hctx, cancel := withHookTimeout(ctx, envelope.deadline, frac, hardHookLimit)
+					hctx, cancel := withHookTimeout(tctx, envelope.deadline, frac, hardHookLimit)
 					decision := envelope.failureHook(hctx, envelope, important)
 					cancel()
 
@@ -322,7 +322,7 @@ func (q *RateEnvelopeQueue) worker(ctx context.Context) {
 					q.inc(1)
 				}
 				if envelope.successHook != nil {
-					hctx, cancel := withHookTimeout(ctx, envelope.deadline, frac, hardHookLimit)
+					hctx, cancel := withHookTimeout(tctx, envelope.deadline, frac, hardHookLimit)
 					envelope.successHook(hctx, envelope)
 					cancel()
 				}
