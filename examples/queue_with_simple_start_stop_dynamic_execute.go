@@ -1,17 +1,15 @@
-package rate_envelope_queue
+package main
 
 import (
 	"context"
 	"errors"
 	"fmt"
-	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
-	"testing"
 	"time"
 
-	"k8s.io/component-base/metrics/legacyregistry"
+	req "github.com/PavelAgarkov/rate-envelope-queue"
 )
 
 type User struct {
@@ -20,8 +18,7 @@ type User struct {
 	Age   int
 }
 
-func Test_Acceptance(t *testing.T) {
-	serveMetrics()
+func main() {
 	parent, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -39,17 +36,17 @@ func Test_Acceptance(t *testing.T) {
 		Email: "@gmail.com",
 		Age:   30,
 	}
-	emailEnvelope, err := NewEnvelope(
-		WithId(1),
-		WithType("email_1"),
+	emailEnvelope, err := req.NewEnvelope(
+		req.WithId(1),
+		req.WithType("email_1"),
 		//WithInterval(6*time.Second),
-		WithDeadline(5*time.Second),
-		WithBeforeHook(func(ctx context.Context, envelope *Envelope) error {
+		req.WithDeadline(5*time.Second),
+		req.WithBeforeHook(func(ctx context.Context, envelope *req.Envelope) error {
 			fmt.Println("hook before email 1 ", envelope.GetId(), time.Now())
 			//return ErrStopTask
 			return nil
 		}),
-		WithInvoke(func(ctx context.Context, envelope *Envelope) error {
+		req.WithInvoke(func(ctx context.Context, envelope *req.Envelope) error {
 			time.Sleep(5 * time.Second)
 			fmt.Println("📧 Email v1", time.Now())
 			user := envelope.GetPayload().(*User)
@@ -58,7 +55,7 @@ func Test_Acceptance(t *testing.T) {
 			envelope.UpdatePayload(user)
 			return nil
 		}),
-		WithAfterHook(func(ctx context.Context, envelope *Envelope) error {
+		req.WithAfterHook(func(ctx context.Context, envelope *req.Envelope) error {
 			fmt.Println("hook after email 1 ", envelope.GetId(), time.Now())
 			user := envelope.GetPayload().(*User)
 			fmt.Println("user:", user.Name, user.Email, user.Age)
@@ -68,140 +65,140 @@ func Test_Acceptance(t *testing.T) {
 			// любая ошибка, которая не ErrStopEnvelope будет обработана в failureHook
 			return fmt.Errorf("some error after")
 		}),
-		WithFailureHook(func(ctx context.Context, envelope *Envelope, err error) Decision {
+		req.WithFailureHook(func(ctx context.Context, envelope *req.Envelope, err error) req.Decision {
 			fmt.Println("failure hook email 1", envelope.GetId(), time.Now(), err)
 			//return DefaultOnceDecision()
 			//return RetryOnceNowDecision()
-			return RetryOnceAfterDecision(time.Second * 5)
+			return req.RetryOnceAfterDecision(time.Second * 5)
 			//return nil
 		}),
-		WithSuccessHook(func(ctx context.Context, envelope *Envelope) {
+		req.WithSuccessHook(func(ctx context.Context, envelope *req.Envelope) {
 			fmt.Println("success hook email 1", envelope.GetId(), time.Now())
 		}),
-		WithStampsPerEnvelope(LoggingStamp()),
-		WithPayload(user1),
+		req.WithStampsPerEnvelope(req.LoggingStamp()),
+		req.WithPayload(user1),
 	)
 	if err != nil {
-		t.Fatal(err)
+		panic(err)
 	}
 
-	emailEnvelope1, err := NewEnvelope(
-		WithId(1),
-		WithType("email_2"),
-		WithScheduleModeInterval(5*time.Second),
-		WithDeadline(3*time.Second),
-		WithInvoke(func(ctx context.Context, envelope *Envelope) error {
+	emailEnvelope1, err := req.NewEnvelope(
+		req.WithId(1),
+		req.WithType("email_2"),
+		req.WithScheduleModeInterval(5*time.Second),
+		req.WithDeadline(3*time.Second),
+		req.WithInvoke(func(ctx context.Context, envelope *req.Envelope) error {
 			time.Sleep(5 * time.Second)
 			fmt.Println("📧 Email v2", time.Now())
 			return nil
 		}),
-		WithBeforeHook(func(ctx context.Context, envelope *Envelope) error {
+		req.WithBeforeHook(func(ctx context.Context, envelope *req.Envelope) error {
 			fmt.Println("hook before email 2", envelope.GetId(), time.Now())
 			//return ErrStopTask
 			return nil
 		}),
-		WithAfterHook(func(ctx context.Context, envelope *Envelope) error {
+		req.WithAfterHook(func(ctx context.Context, envelope *req.Envelope) error {
 			fmt.Println("hook after email 2", envelope.GetId(), time.Now())
-			return ErrStopEnvelope
+			return req.ErrStopEnvelope
 		}),
 	)
 	if err != nil {
-		t.Fatal(err)
+		panic(err)
 	}
 
-	metricsEnvelope, err := NewEnvelope(
-		WithId(2),
-		WithType("metrics"),
-		WithScheduleModeInterval(3*time.Second),
-		WithDeadline(1*time.Second),
-		WithBeforeHook(func(ctx context.Context, envelope *Envelope) error {
+	metricsEnvelope, err := req.NewEnvelope(
+		req.WithId(2),
+		req.WithType("metrics"),
+		req.WithScheduleModeInterval(3*time.Second),
+		req.WithDeadline(1*time.Second),
+		req.WithBeforeHook(func(ctx context.Context, envelope *req.Envelope) error {
 			return nil
 		}),
-		WithInvoke(func(ctx context.Context, envelope *Envelope) error {
+		req.WithInvoke(func(ctx context.Context, envelope *req.Envelope) error {
 			fmt.Println("📧 Metrics v2", time.Now())
 			return nil
 		}),
-		WithAfterHook(func(ctx context.Context, envelope *Envelope) error {
+		req.WithAfterHook(func(ctx context.Context, envelope *req.Envelope) error {
 			return nil
 		}),
 	)
 	if err != nil {
-		t.Fatal(err)
+		panic(err)
 	}
 
-	metricsEnvelope1, err := NewEnvelope(
-		WithId(2),
-		WithType("metrics_1"),
-		WithScheduleModeInterval(0),
-		WithDeadline(1*time.Second),
-		WithBeforeHook(func(ctx context.Context, envelope *Envelope) error {
+	metricsEnvelope1, err := req.NewEnvelope(
+		req.WithId(2),
+		req.WithType("metrics_1"),
+		req.WithScheduleModeInterval(0),
+		req.WithDeadline(1*time.Second),
+		req.WithBeforeHook(func(ctx context.Context, envelope *req.Envelope) error {
 			return nil
 		}),
-		WithInvoke(func(ctx context.Context, envelope *Envelope) error {
+		req.WithInvoke(func(ctx context.Context, envelope *req.Envelope) error {
 			fmt.Println("📧 Metrics v1", time.Now())
 			return nil
 		}),
-		WithAfterHook(func(ctx context.Context, envelope *Envelope) error {
+		req.WithAfterHook(func(ctx context.Context, envelope *req.Envelope) error {
 			return nil
 		}),
 	)
 	if err != nil {
-		t.Fatal(err)
+		panic(err)
 	}
 
-	metricsEnvelope3, err := NewEnvelope(
-		WithId(2),
-		WithType("metrics_3"),
-		WithScheduleModeInterval(0),
-		WithDeadline(1*time.Second),
-		WithBeforeHook(func(ctx context.Context, envelope *Envelope) error {
+	metricsEnvelope3, err := req.NewEnvelope(
+		req.WithId(2),
+		req.WithType("metrics_3"),
+		req.WithScheduleModeInterval(0),
+		req.WithDeadline(1*time.Second),
+		req.WithBeforeHook(func(ctx context.Context, envelope *req.Envelope) error {
 			return nil
 		}),
-		WithInvoke(func(ctx context.Context, envelope *Envelope) error {
+		req.WithInvoke(func(ctx context.Context, envelope *req.Envelope) error {
 			fmt.Println("📧 Metrics v3", time.Now())
 			return errors.New("some error")
 		}),
-		WithAfterHook(func(ctx context.Context, envelope *Envelope) error {
+		req.WithAfterHook(func(ctx context.Context, envelope *req.Envelope) error {
 			return nil
 		}),
 	)
 	if err != nil {
-		t.Fatal(err)
+		panic(err)
 	}
 
-	foodEnvelope, err := NewEnvelope(
-		WithId(3),
-		WithType("food"),
-		WithScheduleModeInterval(2*time.Second),
-		WithDeadline(1*time.Second),
-		WithBeforeHook(func(ctx context.Context, envelope *Envelope) error {
+	foodEnvelope, err := req.NewEnvelope(
+		req.WithId(3),
+		req.WithType("food"),
+		req.WithScheduleModeInterval(2*time.Second),
+		req.WithDeadline(1*time.Second),
+		req.WithBeforeHook(func(ctx context.Context, envelope *req.Envelope) error {
 			return nil
 		}),
-		WithInvoke(func(ctx context.Context, envelope *Envelope) error {
+		req.WithInvoke(func(ctx context.Context, envelope *req.Envelope) error {
 			fmt.Println("📧Fooding v2", time.Now())
 			return nil
 		}),
-		WithAfterHook(func(ctx context.Context, envelope *Envelope) error {
+		req.WithAfterHook(func(ctx context.Context, envelope *req.Envelope) error {
 			return nil
 		}),
 	)
 	if err != nil {
-		t.Fatal(err)
+		panic(err)
 	}
 
-	envelops := map[string]*Envelope{
+	envelops := map[string]*req.Envelope{
 		"Email":   emailEnvelope,
 		"Metrics": metricsEnvelope,
 		"Food":    foodEnvelope,
 	}
 
-	envelopeQueue := NewRateEnvelopeQueue(
+	envelopeQueue := req.NewRateEnvelopeQueue(
 		parent,
 		"test_queue",
-		WithLimitOption(5),
-		WithWaitingOption(true),
-		WithStopModeOption(Drain),
-		WithAllowedCapacityOption(50),
+		req.WithLimitOption(5),
+		req.WithWaitingOption(true),
+		req.WithStopModeOption(req.Drain),
+		req.WithAllowedCapacityOption(50),
 	)
 
 	start := func() {
@@ -239,17 +236,17 @@ func Test_Acceptance(t *testing.T) {
 				Age:   30,
 			}
 			id := i + 1
-			emailEnvelope, err = NewEnvelope(
-				WithId(uint64(id)),
-				WithType("email_1"),
+			emailEnvelope, err = req.NewEnvelope(
+				req.WithId(uint64(id)),
+				req.WithType("email_1"),
 				//WithInterval(6*time.Second),
-				WithDeadline(5*time.Second),
-				WithBeforeHook(func(ctx context.Context, envelope *Envelope) error {
+				req.WithDeadline(5*time.Second),
+				req.WithBeforeHook(func(ctx context.Context, envelope *req.Envelope) error {
 					fmt.Println("hook before email 1 ", envelope.GetId(), time.Now())
 					//return ErrStopTask
 					return nil
 				}),
-				WithInvoke(func(ctx context.Context, envelope *Envelope) error {
+				req.WithInvoke(func(ctx context.Context, envelope *req.Envelope) error {
 					time.Sleep(5 * time.Second)
 					fmt.Println("📧 Email v1", time.Now())
 					user := envelope.GetPayload().(*User)
@@ -258,7 +255,7 @@ func Test_Acceptance(t *testing.T) {
 					envelope.UpdatePayload(user)
 					return nil
 				}),
-				WithAfterHook(func(ctx context.Context, envelope *Envelope) error {
+				req.WithAfterHook(func(ctx context.Context, envelope *req.Envelope) error {
 					fmt.Println("hook after email 1 ", envelope.GetId(), time.Now())
 					user := envelope.GetPayload().(*User)
 					fmt.Println("user:", user.Name, user.Email, user.Age)
@@ -268,21 +265,21 @@ func Test_Acceptance(t *testing.T) {
 					// любая ошибка, которая не ErrStopEnvelope будет обработана в failureHook
 					return fmt.Errorf("some error after")
 				}),
-				WithFailureHook(func(ctx context.Context, envelope *Envelope, err error) Decision {
+				req.WithFailureHook(func(ctx context.Context, envelope *req.Envelope, err error) req.Decision {
 					fmt.Println("failure hook email 1", envelope.GetId(), time.Now(), err)
-					return DefaultOnceDecision()
+					return req.DefaultOnceDecision()
 					//return RetryOnceNowDecision()
 					//return RetryOnceAfterDecision(time.Second * 5)
 					//return nil
 				}),
-				WithSuccessHook(func(ctx context.Context, envelope *Envelope) {
+				req.WithSuccessHook(func(ctx context.Context, envelope *req.Envelope) {
 					fmt.Println("success hook email 1", envelope.GetId(), time.Now())
 				}),
-				WithStampsPerEnvelope(LoggingStamp()),
-				WithPayload(user1),
+				req.WithStampsPerEnvelope(req.LoggingStamp()),
+				req.WithPayload(user1),
 			)
 			if err != nil {
-				t.Fatal(err)
+				panic(err)
 			}
 			err = envelopeQueue.Send(emailEnvelope)
 			if err != nil {
@@ -303,10 +300,4 @@ func Test_Acceptance(t *testing.T) {
 	fmt.Println("parent: done")
 	stop()
 	fmt.Println("queue: done")
-}
-
-func serveMetrics() {
-	mux := http.NewServeMux()
-	mux.Handle("/metrics", legacyregistry.Handler())
-	go http.ListenAndServe(":8080", mux)
 }

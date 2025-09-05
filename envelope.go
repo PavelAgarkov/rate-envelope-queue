@@ -3,7 +3,6 @@ package rate_envelope_queue
 import (
 	"context"
 	"errors"
-	"log"
 	"time"
 )
 
@@ -14,23 +13,71 @@ type Envelope struct {
 	interval time.Duration
 	deadline time.Duration
 
+	// ----- хуки, который разрешают вмешиваться в процесс обработки конверта и остановить его через ошибку ErrStopEnvelope
 	beforeHook func(ctx context.Context, envelope *Envelope) error
-	invoke     func(ctx context.Context) error
+	invoke     func(ctx context.Context, envelope *Envelope) error
 	afterHook  func(ctx context.Context, envelope *Envelope) error
+	// -----
+	// хук, которй позволяет динамически реагировать по решению пользователя на поведение конверта при ошибке
+	failureHook func(ctx context.Context, envelope *Envelope, err error) Decision
+	successHook func(ctx context.Context, envelope *Envelope)
 
-	stamps []Stamp // per-envelope stamps
+	stamps  []Stamp // per-envelope stamps
+	payload interface{}
 }
 
-func (stamp *Envelope) GetId() uint64 {
-	return stamp.id
+func NewDynamicEnvelope(deadline time.Duration, invoke Invoker, payload interface{}) (*Envelope, error) {
+	envelope, err := NewEnvelope(
+		WithDeadline(deadline),
+		WithInvoke(invoke),
+		WithScheduleModeInterval(0),
+		WithPayload(payload),
+	)
+	return envelope, err
 }
 
-func (stamp *Envelope) GetType() string {
-	return stamp._type
+func NewScheduleEnvelope(interval, deadline time.Duration, invoke Invoker, payload interface{}) (*Envelope, error) {
+	envelope, err := NewEnvelope(
+		WithDeadline(deadline),
+		WithInvoke(invoke),
+		WithScheduleModeInterval(interval),
+		WithPayload(payload),
+	)
+	return envelope, err
 }
 
-func (stamp *Envelope) GetStamps() []Stamp {
-	return stamp.stamps
+func NewEnvelope(opt ...func(*Envelope)) (*Envelope, error) {
+	envelope := &Envelope{}
+	for _, o := range opt {
+		o(envelope)
+	}
+
+	// validate required fields
+	if envelope.invoke == nil {
+		return nil, errors.New("envelope invoke is nil")
+	}
+
+	return envelope, nil
+}
+
+func (envelope *Envelope) GetId() uint64 {
+	return envelope.id
+}
+
+func (envelope *Envelope) GetType() string {
+	return envelope._type
+}
+
+func (envelope *Envelope) GetStamps() []Stamp {
+	return envelope.stamps
+}
+
+func (envelope *Envelope) GetPayload() interface{} {
+	return envelope.payload
+}
+
+func (envelope *Envelope) UpdatePayload(p interface{}) {
+	envelope.payload = p
 }
 
 func WithStampsPerEnvelope(stamps ...Stamp) func(*Envelope) {
@@ -39,25 +86,38 @@ func WithStampsPerEnvelope(stamps ...Stamp) func(*Envelope) {
 	}
 }
 
-func WithBeforeHook(hook func(ctx context.Context, envelope *Envelope) error) func(*Envelope) {
+func WithBeforeHook(hook Invoker) func(*Envelope) {
 	return func(e *Envelope) {
 		e.beforeHook = hook
 	}
 }
 
-func WithAfterHook(hook func(ctx context.Context, envelope *Envelope) error) func(*Envelope) {
+func WithAfterHook(hook Invoker) func(*Envelope) {
 	return func(e *Envelope) {
 		e.afterHook = hook
 	}
 }
 
-func WithInvoke(invoke func(ctx context.Context) error) func(*Envelope) {
+func WithInvoke(invoke Invoker) func(*Envelope) {
 	return func(e *Envelope) {
 		e.invoke = invoke
 	}
 }
 
-func WithInterval(d time.Duration) func(*Envelope) {
+func WithFailureHook(hook func(ctx context.Context, envelope *Envelope, err error) Decision) func(*Envelope) {
+	return func(e *Envelope) {
+		e.failureHook = hook
+	}
+}
+
+func WithSuccessHook(hook func(ctx context.Context, envelope *Envelope)) func(*Envelope) {
+	return func(e *Envelope) {
+		e.successHook = hook
+	}
+}
+
+// WithScheduleModeInterval 0 means run once, not a schedule
+func WithScheduleModeInterval(d time.Duration) func(*Envelope) {
 	return func(e *Envelope) {
 		e.interval = d
 	}
@@ -81,76 +141,8 @@ func WithId(id uint64) func(*Envelope) {
 	}
 }
 
-func NewEnvelope(opt ...func(*Envelope)) *Envelope {
-	envelope := &Envelope{}
-	for _, o := range opt {
-		o(envelope)
-	}
-
-	return envelope
-}
-
-func WithHookTimeout(ctx context.Context, base time.Duration, frac float64, min time.Duration) (context.Context, context.CancelFunc) {
-	d := time.Duration(float64(base) * frac)
-	if d < min {
-		d = min
-	}
-	if base == 0 {
-		d = min
-	}
-	return context.WithTimeout(ctx, d)
-}
-
-func WithStamps(stamps ...Stamp) func(*RateEnvelopeQueue) {
-	return func(q *RateEnvelopeQueue) {
-		q.queueStamps = append(q.queueStamps, stamps...)
-	}
-}
-
-func BeforeAfterStamp(withTimeout func(ctx context.Context, base time.Duration, frac float64, min time.Duration) (context.Context, context.CancelFunc)) Stamp {
-	return func(next Invoker) Invoker {
-		return func(ctx context.Context, envelope *Envelope) error {
-			if envelope.beforeHook != nil {
-				hctx, cancel := withTimeout(ctx, envelope.deadline, 0.5, 800*time.Millisecond)
-				err := envelope.beforeHook(hctx, envelope)
-				cancel()
-
-				if err != nil {
-					if errors.Is(err, ErrStopEnvelope) {
-						return ErrStopEnvelope
-					}
-					return err
-				}
-			}
-
-			// основной вызов
-			err := next(ctx, envelope)
-
-			if envelope.afterHook != nil {
-				hctx, cancel := withTimeout(ctx, envelope.deadline, 0.5, 800*time.Millisecond)
-				aerr := envelope.afterHook(hctx, envelope)
-				cancel()
-
-				if aerr != nil {
-					if errors.Is(aerr, ErrStopEnvelope) {
-						return ErrStopEnvelope
-					}
-					//log.Printf("%s: envelope %s/%d after hook error: %v", service, envelope._type, envelope.id, aerr)
-					return aerr
-				}
-			}
-			return err
-		}
-	}
-}
-
-func LoggingStamp(l *log.Logger) Stamp {
-	return func(next Invoker) Invoker {
-		return func(ctx context.Context, envelope *Envelope) error {
-			t0 := time.Now()
-			err := next(ctx, envelope)
-			l.Printf("%s %s/%d dur=%s err=%v", service, envelope._type, envelope.id, time.Since(t0), err)
-			return err
-		}
+func WithPayload(p interface{}) func(*Envelope) {
+	return func(e *Envelope) {
+		e.payload = p
 	}
 }
