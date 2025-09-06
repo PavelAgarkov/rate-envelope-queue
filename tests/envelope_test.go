@@ -3,10 +3,11 @@ package tests
 import (
 	"context"
 	"fmt"
-	req "github.com/PavelAgarkov/rate-envelope-queue"
-	"github.com/stretchr/testify/assert"
 	"testing"
 	"time"
+
+	req "github.com/PavelAgarkov/rate-envelope-queue"
+	"github.com/stretchr/testify/assert"
 )
 
 func TestEnvelope(t *testing.T) {
@@ -231,8 +232,8 @@ func TestEnvelope(t *testing.T) {
 
 	t.Run("Envelope hooks deadline min timeout testing", func(t *testing.T) {
 		var beforeHookIdGetter, afterHookIdGetter uint64
-		envelopeDeadline := 1 * time.Second
-		inHookDeadline := 900 * time.Millisecond // не сработает, т.к min deadline = 800ms
+		envelopeDeadline := 3 * time.Second
+		inHookDeadline := 2000 * time.Millisecond // не сработает, т.к min deadline = 2000ms
 
 		someEnvelope, err := req.NewEnvelope(
 			req.WithId(1),
@@ -246,7 +247,7 @@ func TestEnvelope(t *testing.T) {
 				select {
 				case <-ctx.Done():
 					return ctx.Err()
-				case <-time.After(inHookDeadline): // не сработает, т.к min deadline = 800ms
+				case <-time.After(inHookDeadline): // не сработает, т.к min deadline = 2000ms
 					beforeHookIdGetter = envelope.GetId()
 					return nil
 				}
@@ -255,7 +256,7 @@ func TestEnvelope(t *testing.T) {
 				select {
 				case <-ctx.Done():
 					return ctx.Err()
-				case <-time.After(inHookDeadline): // не сработает, т.к min deadline = 800ms
+				case <-time.After(inHookDeadline): // не сработает, т.к min deadline = 2000ms
 					afterHookIdGetter = envelope.GetId()
 					return nil
 				}

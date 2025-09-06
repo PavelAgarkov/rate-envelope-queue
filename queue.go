@@ -24,8 +24,8 @@ const (
 )
 
 const (
-	hardHookLimit = 800 * time.Millisecond
-	frac          = 0.5
+	hardHookLimit = 2000 * time.Millisecond
+	frac          = 0.9
 )
 
 type RateEnvelopeQueue struct {
@@ -237,19 +237,12 @@ func (q *RateEnvelopeQueue) worker(ctx context.Context) {
 				important = tctx.Err()
 			}
 
-			alive := q.run.Load() && q.ctx != nil && q.ctx.Err() == nil &&
-				q.currentState() == stateRunning && !queue.ShuttingDown()
-
 			switch {
-			// отмена/таймаут — забыть и, если периодическая и очередь жива, перепланировать
-			case errors.Is(important, context.Canceled) || errors.Is(important, context.DeadlineExceeded):
-				queue.Forget(envelope)
-
-				if envelope.interval > 0 && alive {
-					queue.AddAfter(envelope, envelope.interval)
-					q.inc(1)
-				}
-				return nil
+			// ветвь стала не актуальна т.к. перенесена в общий кейс important != nil
+			//т.к отмена контеста или дедлайн — это тоже ошибка выполнения задачи
+			// и пользователь может на неё реагировать в failureHook
+			//(например, если задача одиночная и нужно уведомить пользователя)
+			//case errors.Is(important, context.Canceled) || errors.Is(important, context.DeadlineExceeded):
 
 			// ErrStopEnvelope — забыть и не перепланировать. Ошибка от пользователя о том, что задача больше не нужна
 			case errors.Is(important, ErrStopEnvelope):
@@ -257,11 +250,13 @@ func (q *RateEnvelopeQueue) worker(ctx context.Context) {
 
 				return nil
 
-			// любая другая ошибка — перепланировать (если периодическая и очередь жива) и, если одиночная, вызвать failureHook (если есть) и реагировать
+			// любая ошибка(в том числе и errors.Is(important, context.DeadlineExceeded) || errors.Is(important, context.Canceled)) — перепланировать
+			//(если периодическая и очередь жива) и, если одиночная, вызвать failureHook (если есть) и реагировать
 			//на ответ пользователя через DestinationResult
 			case important != nil:
 				queue.Forget(envelope)
 
+				alive := q.isAlive(queue)
 				if envelope.interval > 0 && alive {
 					queue.AddAfter(envelope, envelope.interval)
 					q.inc(1)
@@ -287,6 +282,7 @@ func (q *RateEnvelopeQueue) worker(ctx context.Context) {
 						state = DecisionStateDrop
 					}
 
+					alive := q.isAlive(queue)
 					if alive {
 						switch state {
 						case DecisionStateRetryNow:
@@ -317,6 +313,8 @@ func (q *RateEnvelopeQueue) worker(ctx context.Context) {
 
 			default:
 				queue.Forget(envelope)
+
+				alive := q.isAlive(queue)
 				if envelope.interval > 0 && alive {
 					queue.AddAfter(envelope, envelope.interval)
 					q.inc(1)
@@ -334,6 +332,11 @@ func (q *RateEnvelopeQueue) worker(ctx context.Context) {
 			log.Printf(service+": envelope %s/%d error: %v", envelope._type, envelope.id, err)
 		}
 	}
+}
+
+func (q *RateEnvelopeQueue) isAlive(queue workqueue.TypedRateLimitingInterface[*Envelope]) bool {
+	return q.run.Load() && q.ctx != nil && q.ctx.Err() == nil &&
+		q.currentState() == stateRunning && !queue.ShuttingDown()
 }
 
 func (q *RateEnvelopeQueue) Send(envelopes ...*Envelope) error {
