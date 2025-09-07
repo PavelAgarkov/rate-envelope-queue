@@ -11,9 +11,9 @@ import (
 
 func TestBaseWorkerBehaviourOnError(t *testing.T) {
 	suite := &TestSuite{}
-	suite.Setup(t)
+	suite.Setup(t, 10*time.Second)
 
-	t.Run("Worker error in beforehook without afterhook testing", func(t *testing.T) {
+	t.Run("Worker error in beforehook without afterhook", func(t *testing.T) {
 		isCalledInInvoke := false
 
 		envelope, err := req.NewEnvelope(
@@ -55,7 +55,7 @@ func TestBaseWorkerBehaviourOnError(t *testing.T) {
 		stop()
 	})
 
-	t.Run("Worker error in beforehook with skip afterhook testing", func(t *testing.T) {
+	t.Run("Worker error in beforehook with skip afterhook", func(t *testing.T) {
 		isCalledInInvoke := false
 		isCalledInAfterHook := false
 
@@ -103,7 +103,7 @@ func TestBaseWorkerBehaviourOnError(t *testing.T) {
 		stop()
 	})
 
-	t.Run("Worker error in beforehook with success afterhook testing", func(t *testing.T) {
+	t.Run("Worker error in beforehook with success call afterhook", func(t *testing.T) {
 		isCalledInInvoke := false
 		isCalledInAfterHook := false
 
@@ -151,12 +151,12 @@ func TestBaseWorkerBehaviourOnError(t *testing.T) {
 		stop()
 	})
 
-	t.Run("Worker error in invoke with skip afterhook testing", func(t *testing.T) {
+	t.Run("Worker error in invoke with skip afterhook", func(t *testing.T) {
 		isCalledInAfterHook := false
 
 		envelope, err := req.NewEnvelope(
 			req.WithId(1),
-			req.WithType("someEnvelope"),
+			req.WithType("envelope"),
 			req.WithBeforeHook(func(ctx context.Context, envelope *req.Envelope) error {
 				return nil
 			}),
@@ -196,12 +196,12 @@ func TestBaseWorkerBehaviourOnError(t *testing.T) {
 		stop()
 	})
 
-	t.Run("Worker error in invoke with skip afterhook testing", func(t *testing.T) {
+	t.Run("Worker error in invoke with success call afterhook", func(t *testing.T) {
 		isCalledInAfterHook := false
 
 		envelope, err := req.NewEnvelope(
 			req.WithId(1),
-			req.WithType("someEnvelope"),
+			req.WithType("envelope"),
 			req.WithBeforeHook(func(ctx context.Context, envelope *req.Envelope) error {
 				return nil
 			}),
@@ -242,37 +242,41 @@ func TestBaseWorkerBehaviourOnError(t *testing.T) {
 	})
 }
 
-func TestWorkerCtxCancelledOrDeadlineExceededOnPeriodicEnvelopeError(t *testing.T) {
+func TestWorkerCtxCancelledOrDeadlineExceededOnPeriodicEnvelope(t *testing.T) {
 	suite := &TestSuite{}
-	suite.Setup(t)
+	suite.Setup(t, 20*time.Second)
 
-	t.Run("Worker beforehook ctx canceled with default value testing", func(t *testing.T) {
-		targetCall := 2
-		actualHookCalls := 1
-		var invokeCalls []int
+	t.Run("Worker beforehook ctx canceled with default deadline value", func(t *testing.T) {
+		targetCycleCall := 2
+		errorCycleCall := 1
+
+		actualCycle := 0
+
+		var cycleCalls []int
 
 		envelope, err := req.NewEnvelope(
 			req.WithId(1),
-			req.WithType("someEnvelope"),
+			req.WithType("envelope"),
 			req.WithScheduleModeInterval(1*time.Second),
 			req.WithBeforeHook(func(ctx context.Context, envelope *req.Envelope) error {
-				switch actualHookCalls {
-				case 1:
+				actualCycle++
+
+				switch actualCycle {
+				case errorCycleCall:
 					select {
-					case <-ctx.Done(): // default deadline parameter=800ms
-						actualHookCalls++
+					case <-ctx.Done(): // default deadline parameter=2000ms
 						return ctx.Err()
 					}
-				case targetCall:
+				case targetCycleCall:
 				}
 				return nil
 			}),
 			req.WithInvoke(func(ctx context.Context, envelope *req.Envelope) error {
-				switch actualHookCalls {
-				case 1:
-					invokeCalls = append(invokeCalls, actualHookCalls)
-				case targetCall:
-					invokeCalls = append(invokeCalls, actualHookCalls)
+				switch actualCycle {
+				case errorCycleCall:
+					cycleCalls = append(cycleCalls, actualCycle)
+				case targetCycleCall:
+					cycleCalls = append(cycleCalls, actualCycle)
 				}
 				return nil
 			}),
@@ -294,7 +298,7 @@ func TestWorkerCtxCancelledOrDeadlineExceededOnPeriodicEnvelopeError(t *testing.
 
 			select {
 			case <-time.After(4 * time.Second):
-				assert.Equal(t, []int{2}, invokeCalls)
+				assert.Equal(t, []int{2}, cycleCalls)
 			}
 		}
 		stop := func() {
@@ -305,36 +309,39 @@ func TestWorkerCtxCancelledOrDeadlineExceededOnPeriodicEnvelopeError(t *testing.
 		stop()
 	})
 
-	t.Run("Worker beforehook context canceled with queue stop testing", func(t *testing.T) {
-		targetCall := 2
-		actualHookCalls := 1
-		var invokeCalls []int
+	t.Run("Worker beforehook context canceled with queue stop", func(t *testing.T) {
+		unworkedCycleCall := 2
+		contextCancelCycle := 1
+
+		actualCycle := 0
+		var cycleCalls []int
 
 		envelope, err := req.NewEnvelope(
 			req.WithId(1),
-			req.WithType("someEnvelope"),
+			req.WithType("envelope"),
 			req.WithScheduleModeInterval(1*time.Second),
 			req.WithBeforeHook(func(ctx context.Context, envelope *req.Envelope) error {
-				switch actualHookCalls {
-				case 1:
+				actualCycle++
+
+				switch contextCancelCycle {
+				case contextCancelCycle:
 					select {
 					case <-time.After(300 * time.Millisecond):
 						select {
 						case <-ctx.Done():
-							actualHookCalls++
 							return ctx.Err()
 						}
 					}
-				case targetCall:
+				case unworkedCycleCall:
 				}
 				return nil
 			}),
 			req.WithInvoke(func(ctx context.Context, envelope *req.Envelope) error {
-				switch actualHookCalls {
-				case 1:
-					invokeCalls = append(invokeCalls, actualHookCalls)
-				case targetCall:
-					invokeCalls = append(invokeCalls, actualHookCalls)
+				switch actualCycle {
+				case contextCancelCycle:
+					cycleCalls = append(cycleCalls, actualCycle)
+				case unworkedCycleCall:
+					cycleCalls = append(cycleCalls, actualCycle)
 				}
 				return nil
 			}),
@@ -361,7 +368,8 @@ func TestWorkerCtxCancelledOrDeadlineExceededOnPeriodicEnvelopeError(t *testing.
 
 			assertTimer := time.NewTimer(2 * time.Second)
 			<-assertTimer.C
-			assert.Equal(t, 0, len(invokeCalls))
+			assert.Equal(t, 0, len(cycleCalls))
+			assert.Equal(t, 1, actualCycle)
 		}
 		stop := func() {
 			envelopeQueue.Stop()
@@ -371,36 +379,39 @@ func TestWorkerCtxCancelledOrDeadlineExceededOnPeriodicEnvelopeError(t *testing.
 		stop()
 	})
 
-	t.Run("Worker invoke context canceled with queue stop testing", func(t *testing.T) {
-		targetCall := 2
-		actualHookCalls := 1
-		var invokeCalls []int
+	t.Run("Worker invoke context canceled with queue stop", func(t *testing.T) {
+		unworkedCycleCall := 2
+		contextCancelCycle := 1
+
+		actualCycle := 0
+		var cycleCalls []int
 
 		envelope, err := req.NewEnvelope(
 			req.WithId(1),
-			req.WithType("someEnvelope"),
+			req.WithType("envelope"),
 			req.WithScheduleModeInterval(1*time.Second),
 			req.WithBeforeHook(func(ctx context.Context, envelope *req.Envelope) error {
-				switch actualHookCalls {
-				case 1:
-					invokeCalls = append(invokeCalls, actualHookCalls)
-				case targetCall:
-					invokeCalls = append(invokeCalls, actualHookCalls)
+				actualCycle++
+
+				switch actualCycle {
+				case contextCancelCycle:
+					cycleCalls = append(cycleCalls, actualCycle)
+				case unworkedCycleCall:
+					cycleCalls = append(cycleCalls, actualCycle)
 				}
 				return nil
 			}),
 			req.WithInvoke(func(ctx context.Context, envelope *req.Envelope) error {
-				switch actualHookCalls {
+				switch actualCycle {
 				case 1:
 					select {
 					case <-time.After(300 * time.Millisecond):
 						select {
 						case <-ctx.Done():
-							actualHookCalls++
 							return ctx.Err()
 						}
 					}
-				case targetCall:
+				case unworkedCycleCall:
 				}
 				return nil
 			}),
@@ -427,7 +438,8 @@ func TestWorkerCtxCancelledOrDeadlineExceededOnPeriodicEnvelopeError(t *testing.
 
 			assertTimer := time.NewTimer(2 * time.Second)
 			<-assertTimer.C
-			assert.Equal(t, []int{1}, invokeCalls)
+			assert.Equal(t, []int{contextCancelCycle}, cycleCalls)
+			assert.Equal(t, 1, actualCycle)
 		}
 		stop := func() {
 			envelopeQueue.Stop()
@@ -437,21 +449,25 @@ func TestWorkerCtxCancelledOrDeadlineExceededOnPeriodicEnvelopeError(t *testing.
 		stop()
 	})
 
-	t.Run("Worker afterhook context canceled with queue stop testing", func(t *testing.T) {
-		targetCall := 2
-		actualHookCalls := 1
-		var invokeCalls []int
+	t.Run("Worker afterhook context canceled with queue stop", func(t *testing.T) {
+		unworkedCycleCall := 2
+		contextCancelCycle := 1
+
+		actualCycle := 0
+		var cycleCalls []int
 
 		envelope, err := req.NewEnvelope(
 			req.WithId(1),
-			req.WithType("someEnvelope"),
+			req.WithType("envelope"),
 			req.WithScheduleModeInterval(1*time.Second),
 			req.WithBeforeHook(func(ctx context.Context, envelope *req.Envelope) error {
-				switch actualHookCalls {
-				case 1:
-					invokeCalls = append(invokeCalls, actualHookCalls)
-				case targetCall:
-					invokeCalls = append(invokeCalls, actualHookCalls)
+				actualCycle++
+
+				switch actualCycle {
+				case contextCancelCycle:
+					cycleCalls = append(cycleCalls, actualCycle)
+				case unworkedCycleCall:
+					cycleCalls = append(cycleCalls, actualCycle)
 				}
 				return nil
 			}),
@@ -459,17 +475,16 @@ func TestWorkerCtxCancelledOrDeadlineExceededOnPeriodicEnvelopeError(t *testing.
 				return nil
 			}),
 			req.WithAfterHook(func(ctx context.Context, envelope *req.Envelope) error {
-				switch actualHookCalls {
+				switch actualCycle {
 				case 1:
 					select {
 					case <-time.After(300 * time.Millisecond):
 						select {
 						case <-ctx.Done():
-							actualHookCalls++
 							return ctx.Err()
 						}
 					}
-				case targetCall:
+				case unworkedCycleCall:
 				}
 				return nil
 			}),
@@ -496,7 +511,8 @@ func TestWorkerCtxCancelledOrDeadlineExceededOnPeriodicEnvelopeError(t *testing.
 
 			assertTimer := time.NewTimer(2 * time.Second)
 			<-assertTimer.C
-			assert.Equal(t, []int{1}, invokeCalls)
+			assert.Equal(t, []int{1}, cycleCalls)
+			assert.Equal(t, 1, actualCycle)
 		}
 		stop := func() {
 			envelopeQueue.Stop()
@@ -506,14 +522,16 @@ func TestWorkerCtxCancelledOrDeadlineExceededOnPeriodicEnvelopeError(t *testing.
 		stop()
 	})
 
-	t.Run("Worker afterhook context canceled with skip failurehook testing", func(t *testing.T) {
-		targetCall := 2
-		actualHookCalls := 0
-		var invokeCalls []int
+	t.Run("Worker afterhook context canceled with skip failurehook", func(t *testing.T) {
+		unworkedCycleCall := 2
+		contextCancelCycle := 1
+
+		actualCycle := 0
+		var cycleCalls []int
 
 		envelope, err := req.NewEnvelope(
 			req.WithId(1),
-			req.WithType("someEnvelope"),
+			req.WithType("envelope"),
 			req.WithScheduleModeInterval(1*time.Second),
 			req.WithBeforeHook(func(ctx context.Context, envelope *req.Envelope) error {
 				return nil
@@ -522,10 +540,10 @@ func TestWorkerCtxCancelledOrDeadlineExceededOnPeriodicEnvelopeError(t *testing.
 				return nil
 			}),
 			req.WithAfterHook(func(ctx context.Context, envelope *req.Envelope) error {
-				actualHookCalls++
+				actualCycle++
 
-				switch actualHookCalls {
-				case 1:
+				switch actualCycle {
+				case contextCancelCycle:
 					select {
 					case <-time.After(300 * time.Millisecond):
 						select {
@@ -533,12 +551,12 @@ func TestWorkerCtxCancelledOrDeadlineExceededOnPeriodicEnvelopeError(t *testing.
 							return ctx.Err()
 						}
 					}
-				case targetCall:
+				case unworkedCycleCall:
 				}
 				return nil
 			}),
 			req.WithFailureHook(func(ctx context.Context, envelope *req.Envelope, err error) req.Decision {
-				invokeCalls = append(invokeCalls, actualHookCalls)
+				cycleCalls = append(cycleCalls, actualCycle)
 				return req.DefaultOnceDecision()
 			}),
 		)
@@ -564,7 +582,7 @@ func TestWorkerCtxCancelledOrDeadlineExceededOnPeriodicEnvelopeError(t *testing.
 
 			assertTimer := time.NewTimer(2 * time.Second)
 			<-assertTimer.C
-			assert.Equal(t, 0, len(invokeCalls))
+			assert.Equal(t, 0, len(cycleCalls))
 		}
 		stop := func() {
 			envelopeQueue.Stop()
@@ -577,32 +595,33 @@ func TestWorkerCtxCancelledOrDeadlineExceededOnPeriodicEnvelopeError(t *testing.
 
 func TestIntervalCallingOnPeriodicEnvelopeWithError(t *testing.T) {
 	suite := &TestSuite{}
-	suite.Setup(t)
+	suite.Setup(t, 10*time.Second)
 
-	t.Run("Envelope rescheduling if error is in beforehook calling testing", func(t *testing.T) {
-		errorCall := 1
-		successCall := 2
-		currentCall := 0
-		var isCalledMarkCounter []int
+	t.Run("Envelope rescheduling if error is in beforehook calling", func(t *testing.T) {
+		successCycleCall := 2
+		errorCycle := 1
 
-		someEnvelope, err := req.NewEnvelope(
+		actualCycle := 0
+		var cycleCalls []int
+
+		envelope, err := req.NewEnvelope(
 			req.WithId(1),
-			req.WithType("someEnvelope"),
+			req.WithType("envelope"),
 			req.WithScheduleModeInterval(1*time.Second),
 			req.WithDeadline(1*time.Second),
 			req.WithBeforeHook(func(ctx context.Context, envelope *req.Envelope) error {
-				currentCall++
+				actualCycle++
 
-				switch currentCall {
-				case errorCall:
+				switch actualCycle {
+				case errorCycle:
 					return fmt.Errorf("error")
-				case successCall:
+				case successCycleCall:
 					return nil
 				}
 				return nil
 			}),
 			req.WithInvoke(func(ctx context.Context, envelope *req.Envelope) error {
-				isCalledMarkCounter = append(isCalledMarkCounter, currentCall)
+				cycleCalls = append(cycleCalls, actualCycle)
 				return nil
 			}),
 			req.WithAfterHook(func(ctx context.Context, envelope *req.Envelope) error {
@@ -621,12 +640,12 @@ func TestIntervalCallingOnPeriodicEnvelopeWithError(t *testing.T) {
 
 		start := func() {
 			envelopeQueue.Start()
-			err = envelopeQueue.Send(someEnvelope)
+			err = envelopeQueue.Send(envelope)
 			assert.NoError(t, err)
 
 			select {
 			case <-time.After(1*time.Second + 100*time.Millisecond):
-				assert.Equal(t, []int{successCall}, isCalledMarkCounter)
+				assert.Equal(t, []int{successCycleCall}, cycleCalls)
 			}
 		}
 		stop := func() {
@@ -637,28 +656,29 @@ func TestIntervalCallingOnPeriodicEnvelopeWithError(t *testing.T) {
 		stop()
 	})
 
-	t.Run("Envelope rescheduling if error is in invoke calling testing", func(t *testing.T) {
-		errorCall := 1
-		successCall := 2
-		currentCall := 0
-		invokeMark := false
+	t.Run("Envelope rescheduling if error is in invoke calling", func(t *testing.T) {
+		successCycleCall := 2
+		errorCycle := 1
 
-		someEnvelope, err := req.NewEnvelope(
+		actualCycle := 0
+		invokeCallMark := false
+
+		envelope, err := req.NewEnvelope(
 			req.WithId(1),
-			req.WithType("someEnvelope"),
+			req.WithType("envelope"),
 			req.WithScheduleModeInterval(1*time.Second),
 			req.WithDeadline(1*time.Second),
 			req.WithBeforeHook(func(ctx context.Context, envelope *req.Envelope) error {
 				return nil
 			}),
 			req.WithInvoke(func(ctx context.Context, envelope *req.Envelope) error {
-				currentCall++
+				actualCycle++
 
-				switch currentCall {
-				case errorCall:
+				switch actualCycle {
+				case errorCycle:
 					return fmt.Errorf("error")
-				case successCall:
-					invokeMark = true
+				case successCycleCall:
+					invokeCallMark = true
 				}
 				return nil
 			}),
@@ -678,12 +698,12 @@ func TestIntervalCallingOnPeriodicEnvelopeWithError(t *testing.T) {
 
 		start := func() {
 			envelopeQueue.Start()
-			err = envelopeQueue.Send(someEnvelope)
+			err = envelopeQueue.Send(envelope)
 			assert.NoError(t, err)
 
 			select {
 			case <-time.After(1*time.Second + 100*time.Millisecond):
-				assert.Equal(t, true, invokeMark)
+				assert.Equal(t, true, invokeCallMark)
 			}
 		}
 		stop := func() {
@@ -694,21 +714,21 @@ func TestIntervalCallingOnPeriodicEnvelopeWithError(t *testing.T) {
 		stop()
 	})
 
-	t.Run("Envelope default interval calling if error is in afterhook testing", func(t *testing.T) {
-		currentCall := 0
-		var isCalledMarkCounter []int
+	t.Run("Envelope default interval calling and skip error call if error is in afterhook", func(t *testing.T) {
+		cycleCall := 0
+		var cycleMarkCallsCounter []int
 
-		someEnvelope, err := req.NewEnvelope(
+		envelope, err := req.NewEnvelope(
 			req.WithId(1),
-			req.WithType("someEnvelope"),
+			req.WithType("envelope"),
 			req.WithScheduleModeInterval(1*time.Second),
 			req.WithDeadline(1*time.Second),
 			req.WithBeforeHook(func(ctx context.Context, envelope *req.Envelope) error {
 				return nil
 			}),
 			req.WithInvoke(func(ctx context.Context, envelope *req.Envelope) error {
-				currentCall++
-				isCalledMarkCounter = append(isCalledMarkCounter, currentCall)
+				cycleCall++
+				cycleMarkCallsCounter = append(cycleMarkCallsCounter, cycleCall)
 
 				return nil
 			}),
@@ -728,12 +748,12 @@ func TestIntervalCallingOnPeriodicEnvelopeWithError(t *testing.T) {
 
 		start := func() {
 			envelopeQueue.Start()
-			err = envelopeQueue.Send(someEnvelope)
+			err = envelopeQueue.Send(envelope)
 			assert.NoError(t, err)
 
 			select {
-			case <-time.After(1*time.Second + 100*time.Millisecond):
-				assert.Equal(t, []int{1, 2}, isCalledMarkCounter)
+			case <-time.After(1*time.Second + 100*time.Millisecond): // ожидаем 2 цикла выполнения envelope
+				assert.Equal(t, []int{1, 2}, cycleMarkCallsCounter)
 			}
 		}
 		stop := func() {
@@ -745,27 +765,29 @@ func TestIntervalCallingOnPeriodicEnvelopeWithError(t *testing.T) {
 	})
 }
 
-func TestFailureHookDecisionsOnOneTimeEnvelopes(t *testing.T) {
+func TestFailureHookDecisionsOnOneTimeEnvelope(t *testing.T) {
 	suite := &TestSuite{}
-	suite.Setup(t)
+	suite.Setup(t, 1*time.Minute)
 
-	t.Run("Envelope default decision if WithFailureHook is nil testing", func(t *testing.T) {
-		targetCalls := 1
-		currentCalls := 0
-		successMark := false
+	t.Run("Envelope automatic drop decision setting if WithFailureHook is nil", func(t *testing.T) {
+		successCycleCall := 2
+		errorCycle := 1
 
-		someEnvelope, err := req.NewEnvelope(
+		cycleCall := 0
+		var successHookCycleCall []int
+
+		envelope, err := req.NewEnvelope(
 			req.WithId(1),
-			req.WithType("someEnvelope"),
+			req.WithType("envelope"),
 			req.WithScheduleModeInterval(0),
 			req.WithDeadline(1*time.Second),
 			req.WithInvoke(func(ctx context.Context, envelope *req.Envelope) error {
-				switch currentCalls {
-				case 0:
-					currentCalls++
-					return fmt.Errorf("some error")
-				case 1:
-					currentCalls++
+				cycleCall++
+
+				switch cycleCall {
+				case errorCycle:
+					return fmt.Errorf("error")
+				case successCycleCall:
 				}
 
 				return nil
@@ -774,7 +796,7 @@ func TestFailureHookDecisionsOnOneTimeEnvelopes(t *testing.T) {
 				return nil
 			}),
 			req.WithSuccessHook(func(ctx context.Context, envelope *req.Envelope) {
-				successMark = true
+				successHookCycleCall = append(successHookCycleCall, cycleCall)
 			}),
 		)
 		assert.NoError(t, err)
@@ -789,13 +811,13 @@ func TestFailureHookDecisionsOnOneTimeEnvelopes(t *testing.T) {
 
 		start := func() {
 			envelopeQueue.Start()
-			err = envelopeQueue.Send(someEnvelope)
+			err = envelopeQueue.Send(envelope)
 			assert.NoError(t, err)
 
 			select {
-			case <-time.After(1 * time.Second):
-				assert.Equal(t, targetCalls, currentCalls)
-				assert.Equal(t, false, successMark)
+			case <-time.After(2 * time.Second):
+				assert.Equal(t, 1, cycleCall)
+				assert.Equal(t, 0, len(successHookCycleCall))
 			}
 		}
 		stop := func() {
@@ -806,23 +828,28 @@ func TestFailureHookDecisionsOnOneTimeEnvelopes(t *testing.T) {
 		stop()
 	})
 
-	t.Run("Envelope WithFailureHook default decision testing", func(t *testing.T) {
-		targetCalls := 1
-		currentCalls := 0
-		successMark := false
+	t.Run("Envelope WithFailureHook DefaultOnceDecision", func(t *testing.T) {
+		successCycleCall := 2
+		errorCycle := 1
 
-		someEnvelope, err := req.NewEnvelope(
+		cycleCall := 0
+
+		successHookMark := false
+		var successHookCycleCall []int
+
+		envelope, err := req.NewEnvelope(
 			req.WithId(1),
-			req.WithType("someEnvelope"),
+			req.WithType("envelope"),
 			req.WithScheduleModeInterval(0),
 			req.WithDeadline(1*time.Second),
 			req.WithInvoke(func(ctx context.Context, envelope *req.Envelope) error {
-				switch currentCalls {
-				case 0:
-					currentCalls++
-					return fmt.Errorf("some error")
-				case 1:
-					currentCalls++
+				cycleCall++
+
+				switch cycleCall {
+				case errorCycle:
+					return fmt.Errorf("error")
+				case successCycleCall:
+					successHookCycleCall = append(successHookCycleCall, cycleCall)
 				}
 
 				return nil
@@ -831,7 +858,7 @@ func TestFailureHookDecisionsOnOneTimeEnvelopes(t *testing.T) {
 				return req.DefaultOnceDecision()
 			}),
 			req.WithSuccessHook(func(ctx context.Context, envelope *req.Envelope) {
-				successMark = true
+				successHookMark = true
 			}),
 		)
 		assert.NoError(t, err)
@@ -846,13 +873,13 @@ func TestFailureHookDecisionsOnOneTimeEnvelopes(t *testing.T) {
 
 		start := func() {
 			envelopeQueue.Start()
-			err = envelopeQueue.Send(someEnvelope)
+			err = envelopeQueue.Send(envelope)
 			assert.NoError(t, err)
 
 			select {
 			case <-time.After(1 * time.Second):
-				assert.Equal(t, targetCalls, currentCalls)
-				assert.Equal(t, false, successMark)
+				assert.Equal(t, 0, len(successHookCycleCall))
+				assert.Equal(t, false, successHookMark)
 			}
 		}
 		stop := func() {
@@ -863,28 +890,32 @@ func TestFailureHookDecisionsOnOneTimeEnvelopes(t *testing.T) {
 		stop()
 	})
 
-	t.Run("Envelope WithFailureHook now timeout testing", func(t *testing.T) {
-		targetRetry := 1
-		currentRetry := 0
-		isCalledInRetryCount := 0
-		successMark := false
+	t.Run("Envelope WithFailureHook RetryOnceNowDecision", func(t *testing.T) {
+		successCycleCall := 2
+		errorCycle := 1
 
-		someEnvelope, err := req.NewEnvelope(
+		cycleCall := 0
+
+		successHookMark := false
+		var successHookCycleCall []int
+
+		envelope, err := req.NewEnvelope(
 			req.WithId(1),
-			req.WithType("someEnvelope"),
+			req.WithType("envelope"),
 			req.WithScheduleModeInterval(0),
 			req.WithDeadline(1*time.Second),
 			req.WithInvoke(func(ctx context.Context, envelope *req.Envelope) error {
 				time.Sleep(500 * time.Millisecond)
-				switch currentRetry {
-				case 0:
-					currentRetry++
-					return fmt.Errorf("some error")
-				case targetRetry:
-					isCalledInRetryCount++
-					currentRetry++
-				case targetRetry + 1:
-					isCalledInRetryCount++
+				cycleCall++
+
+				switch cycleCall {
+				case errorCycle:
+
+					return fmt.Errorf("error")
+				case successCycleCall:
+					successHookCycleCall = append(successHookCycleCall, cycleCall)
+				case successCycleCall + 1:
+					successHookCycleCall = append(successHookCycleCall, cycleCall)
 				}
 
 				return nil
@@ -893,7 +924,7 @@ func TestFailureHookDecisionsOnOneTimeEnvelopes(t *testing.T) {
 				return req.RetryOnceNowDecision()
 			}),
 			req.WithSuccessHook(func(ctx context.Context, envelope *req.Envelope) {
-				successMark = true
+				successHookMark = true
 			}),
 		)
 		assert.NoError(t, err)
@@ -908,27 +939,28 @@ func TestFailureHookDecisionsOnOneTimeEnvelopes(t *testing.T) {
 
 		start := func() {
 			envelopeQueue.Start()
-			err = envelopeQueue.Send(someEnvelope)
+			err = envelopeQueue.Send(envelope)
 			assert.NoError(t, err)
 
 			// первый вызов внутри invoke с ошибкой
 			select {
 			case <-time.After(750 * time.Millisecond):
-				assert.Equal(t, 0, isCalledInRetryCount)
-				assert.Equal(t, false, successMark)
+				assert.Equal(t, 0, len(successHookCycleCall))
+				assert.Equal(t, false, successHookMark)
 			}
 
 			// второй вызов внутри invoke (уже успешный)
 			select {
 			case <-time.After(750 * time.Millisecond):
-				assert.Equal(t, 1, isCalledInRetryCount)
-				assert.Equal(t, true, successMark)
+				assert.Equal(t, []int{successCycleCall}, successHookCycleCall)
+				assert.Equal(t, true, successHookMark)
 			}
 
 			// нового вызова нет, после повторного вызова в invoke envelope забыт через Forget
 			select {
 			case <-time.After(750 * time.Millisecond):
-				assert.Equal(t, 1, isCalledInRetryCount)
+				assert.Equal(t, []int{successCycleCall}, successHookCycleCall)
+				assert.Equal(t, successCycleCall, cycleCall)
 			}
 		}
 		stop := func() {
@@ -939,27 +971,31 @@ func TestFailureHookDecisionsOnOneTimeEnvelopes(t *testing.T) {
 		stop()
 	})
 
-	t.Run("Envelope WithFailureHook deadline timeout testing", func(t *testing.T) {
-		targetRetry := 1
-		currentRetry := 0
-		isCalledInRetryCount := 0
-		successMark := false
+	t.Run("Envelope RetryOnceAfterDecision with deadline timeout", func(t *testing.T) {
+		successCycleCall := 2
+		errorCycle := 1
 
-		someEnvelope, err := req.NewEnvelope(
+		cycleCall := 0
+
+		successHookMark := false
+		var successHookCycleCall []int
+
+		envelope, err := req.NewEnvelope(
 			req.WithId(1),
-			req.WithType("someEnvelope"),
+			req.WithType("envelope"),
 			req.WithScheduleModeInterval(0),
 			req.WithDeadline(1*time.Second),
 			req.WithInvoke(func(ctx context.Context, envelope *req.Envelope) error {
-				switch currentRetry {
-				case 0:
-					currentRetry++
-					return fmt.Errorf("some error")
-				case targetRetry:
-					isCalledInRetryCount++
-					currentRetry++
-				case targetRetry + 1:
-					isCalledInRetryCount++
+				cycleCall++
+
+				switch cycleCall {
+				case errorCycle:
+
+					return fmt.Errorf("error")
+				case successCycleCall:
+					successHookCycleCall = append(successHookCycleCall, cycleCall)
+				case successCycleCall + 1:
+					successHookCycleCall = append(successHookCycleCall, cycleCall)
 				}
 
 				return nil
@@ -968,7 +1004,7 @@ func TestFailureHookDecisionsOnOneTimeEnvelopes(t *testing.T) {
 				return req.RetryOnceAfterDecision(2 * time.Second)
 			}),
 			req.WithSuccessHook(func(ctx context.Context, envelope *req.Envelope) {
-				successMark = true
+				successHookMark = true
 			}),
 		)
 		assert.NoError(t, err)
@@ -983,34 +1019,35 @@ func TestFailureHookDecisionsOnOneTimeEnvelopes(t *testing.T) {
 
 		start := func() {
 			envelopeQueue.Start()
-			err = envelopeQueue.Send(someEnvelope)
+			err = envelopeQueue.Send(envelope)
 			assert.NoError(t, err)
 
 			// первый вызов invoke
 			select {
 			case <-time.After(500 * time.Millisecond):
-				assert.Equal(t, 0, isCalledInRetryCount)
-				assert.Equal(t, false, successMark)
+				assert.Equal(t, 0, len(successHookCycleCall))
+				assert.Equal(t, false, successHookMark)
 			}
 
 			// invoke отложен с дедлайном в WithFailureHook, isCalledInRetryCount тот же
 			select {
 			case <-time.After(500 * time.Millisecond):
-				assert.Equal(t, 0, isCalledInRetryCount)
-				assert.Equal(t, false, successMark)
+				assert.Equal(t, 0, len(successHookCycleCall))
+				assert.Equal(t, false, successHookMark)
 			}
 
 			// дедлайн из WithFailureHook прошел, новый вызов invoke
 			select {
 			case <-time.After(2 * time.Second):
-				assert.Equal(t, 1, isCalledInRetryCount)
-				assert.Equal(t, true, successMark)
+				assert.Equal(t, []int{successCycleCall}, successHookCycleCall)
+				assert.Equal(t, true, successHookMark)
 			}
 
 			// нового вызова нет, после повторного вызова в invoke envelope забыт через Forget
 			select {
 			case <-time.After(1 * time.Second):
-				assert.Equal(t, 1, isCalledInRetryCount)
+				assert.Equal(t, []int{successCycleCall}, successHookCycleCall)
+				assert.Equal(t, successCycleCall, cycleCall)
 			}
 		}
 		stop := func() {
@@ -1021,27 +1058,30 @@ func TestFailureHookDecisionsOnOneTimeEnvelopes(t *testing.T) {
 		stop()
 	})
 
-	t.Run("Envelope set default deadline timeout if WithFailureHook timeout is 0 testing", func(t *testing.T) {
-		targetRetry := 1
-		currentRetry := 0
-		isCalledInRetryCount := 0
-		successMark := false
+	t.Run("Envelope automatic deadline setting if RetryOnceAfterDecision timeout is 0", func(t *testing.T) {
+		successCycleCall := 2
+		errorCycle := 1
 
-		someEnvelope, err := req.NewEnvelope(
+		cycleCall := 0
+
+		successHookMark := false
+		var successHookCycleCall []int
+
+		envelope, err := req.NewEnvelope(
 			req.WithId(1),
-			req.WithType("someEnvelope"),
+			req.WithType("envelope"),
 			req.WithScheduleModeInterval(0),
 			req.WithDeadline(1*time.Second),
 			req.WithInvoke(func(ctx context.Context, envelope *req.Envelope) error {
-				switch currentRetry {
-				case 0:
-					currentRetry++
-					return fmt.Errorf("some error")
-				case targetRetry:
-					isCalledInRetryCount++
-					currentRetry++
-				case targetRetry + 1:
-					isCalledInRetryCount++
+				cycleCall++
+
+				switch cycleCall {
+				case errorCycle:
+					return fmt.Errorf("error")
+				case successCycleCall:
+					successHookCycleCall = append(successHookCycleCall, cycleCall)
+				case successCycleCall + 1:
+					successHookCycleCall = append(successHookCycleCall, cycleCall)
 				}
 
 				return nil
@@ -1050,7 +1090,7 @@ func TestFailureHookDecisionsOnOneTimeEnvelopes(t *testing.T) {
 				return req.RetryOnceAfterDecision(0) // default = 30s
 			}),
 			req.WithSuccessHook(func(ctx context.Context, envelope *req.Envelope) {
-				successMark = true
+				successHookMark = true
 			}),
 		)
 		assert.NoError(t, err)
@@ -1065,34 +1105,35 @@ func TestFailureHookDecisionsOnOneTimeEnvelopes(t *testing.T) {
 
 		start := func() {
 			envelopeQueue.Start()
-			err = envelopeQueue.Send(someEnvelope)
+			err = envelopeQueue.Send(envelope)
 			assert.NoError(t, err)
 
 			// первый вызов invoke
 			select {
 			case <-time.After(500 * time.Millisecond):
-				assert.Equal(t, 0, isCalledInRetryCount)
-				assert.Equal(t, false, successMark)
+				assert.Equal(t, 0, len(successHookCycleCall))
+				assert.Equal(t, false, successHookMark)
 			}
 
 			// invoke отложен с дедлайном в WithFailureHook, isCalledInRetryCount тот же
 			select {
 			case <-time.After(500 * time.Millisecond):
-				assert.Equal(t, 0, isCalledInRetryCount)
-				assert.Equal(t, false, successMark)
+				assert.Equal(t, 0, len(successHookCycleCall))
+				assert.Equal(t, false, successHookMark)
 			}
 
 			// дедлайн из WithFailureHook прошел, новый вызов invoke
 			select {
 			case <-time.After(30 * time.Second):
-				assert.Equal(t, 1, isCalledInRetryCount)
-				assert.Equal(t, true, successMark)
+				assert.Equal(t, []int{successCycleCall}, successHookCycleCall)
+				assert.Equal(t, true, successHookMark)
 			}
 
 			// нового вызова нет, после повторного вызова в invoke envelope забыт через Forget
 			select {
 			case <-time.After(1 * time.Second):
-				assert.Equal(t, 1, isCalledInRetryCount)
+				assert.Equal(t, []int{successCycleCall}, successHookCycleCall)
+				assert.Equal(t, successCycleCall, cycleCall)
 			}
 		}
 		stop := func() {
@@ -1103,9 +1144,9 @@ func TestFailureHookDecisionsOnOneTimeEnvelopes(t *testing.T) {
 		stop()
 	})
 
-	t.Run("Multiple envelope with different timeouts in WithFailureHook testing", func(t *testing.T) {
-		targetCalls := []string{"first", "third", "fifth", "forth", "second"}
-		var actualCalls []string
+	t.Run("Multiple envelope with different timeouts in WithFailureHook in queue win single(1) worker", func(t *testing.T) {
+		targetEnvelopeOrderCalls := []string{"first", "third", "fifth", "forth", "second"}
+		var actualEnvelopeOrderCalls []string
 
 		firstEnvelope, err := req.NewEnvelope(
 			req.WithId(1),
@@ -1113,7 +1154,7 @@ func TestFailureHookDecisionsOnOneTimeEnvelopes(t *testing.T) {
 			req.WithScheduleModeInterval(0),
 			req.WithDeadline(1*time.Second),
 			req.WithInvoke(func(ctx context.Context, envelope *req.Envelope) error {
-				actualCalls = append(actualCalls, "first")
+				actualEnvelopeOrderCalls = append(actualEnvelopeOrderCalls, "first")
 				return nil
 			}),
 			req.WithFailureHook(func(ctx context.Context, envelope *req.Envelope, err error) req.Decision {
@@ -1133,9 +1174,9 @@ func TestFailureHookDecisionsOnOneTimeEnvelopes(t *testing.T) {
 				switch currentRetrySecond {
 				case 0:
 					currentRetrySecond++
-					return fmt.Errorf("some error")
+					return fmt.Errorf("error")
 				case targetRetrySecond:
-					actualCalls = append(actualCalls, "second")
+					actualEnvelopeOrderCalls = append(actualEnvelopeOrderCalls, "second")
 				}
 
 				return nil
@@ -1151,7 +1192,7 @@ func TestFailureHookDecisionsOnOneTimeEnvelopes(t *testing.T) {
 			req.WithScheduleModeInterval(0),
 			req.WithDeadline(1*time.Second),
 			req.WithInvoke(func(ctx context.Context, envelope *req.Envelope) error {
-				actualCalls = append(actualCalls, "third")
+				actualEnvelopeOrderCalls = append(actualEnvelopeOrderCalls, "third")
 				return nil
 			}),
 			req.WithFailureHook(func(ctx context.Context, envelope *req.Envelope, err error) req.Decision {
@@ -1171,9 +1212,9 @@ func TestFailureHookDecisionsOnOneTimeEnvelopes(t *testing.T) {
 				switch currentRetryForth {
 				case 0:
 					currentRetryForth++
-					return fmt.Errorf("some error")
+					return fmt.Errorf("error")
 				case targetRetryForth:
-					actualCalls = append(actualCalls, "forth")
+					actualEnvelopeOrderCalls = append(actualEnvelopeOrderCalls, "forth")
 				}
 
 				return nil
@@ -1194,9 +1235,9 @@ func TestFailureHookDecisionsOnOneTimeEnvelopes(t *testing.T) {
 				switch failureCallFifth {
 				case 1:
 					failureCallFifth++
-					return fmt.Errorf("some error")
+					return fmt.Errorf("error")
 				default:
-					actualCalls = append(actualCalls, "fifth")
+					actualEnvelopeOrderCalls = append(actualEnvelopeOrderCalls, "fifth")
 					return nil
 				}
 			}),
@@ -1221,9 +1262,8 @@ func TestFailureHookDecisionsOnOneTimeEnvelopes(t *testing.T) {
 
 			select {
 			case <-time.After(4 * time.Second):
-				assert.Equal(t, targetCalls, actualCalls)
+				assert.Equal(t, actualEnvelopeOrderCalls, targetEnvelopeOrderCalls)
 			}
-			fmt.Println(actualCalls)
 		}
 
 		stop := func() {
@@ -1237,20 +1277,20 @@ func TestFailureHookDecisionsOnOneTimeEnvelopes(t *testing.T) {
 
 func TestSuccessHookOnOneTimeEnvelope(t *testing.T) {
 	suite := &TestSuite{}
-	suite.Setup(t)
+	suite.Setup(t, 10*time.Second)
 
-	t.Run("Envelope success hook testing", func(t *testing.T) {
-		successMark := false
+	t.Run("Envelope success hook", func(t *testing.T) {
+		successHookMark := false
 
-		someEnvelope, err := req.NewEnvelope(
+		envelope, err := req.NewEnvelope(
 			req.WithId(1),
-			req.WithType("someEnvelope"),
+			req.WithType("envelope"),
 			req.WithScheduleModeInterval(0),
 			req.WithInvoke(func(ctx context.Context, envelope *req.Envelope) error {
 				return nil
 			}),
 			req.WithSuccessHook(func(ctx context.Context, envelope *req.Envelope) {
-				successMark = true
+				successHookMark = true
 			}),
 		)
 		assert.NoError(t, err)
@@ -1265,12 +1305,12 @@ func TestSuccessHookOnOneTimeEnvelope(t *testing.T) {
 
 		start := func() {
 			envelopeQueue.Start()
-			err = envelopeQueue.Send(someEnvelope)
+			err = envelopeQueue.Send(envelope)
 			assert.NoError(t, err)
 
 			select {
 			case <-time.After(1 * time.Second):
-				assert.Equal(t, true, successMark)
+				assert.Equal(t, true, successHookMark)
 			}
 		}
 		stop := func() {
@@ -1281,12 +1321,12 @@ func TestSuccessHookOnOneTimeEnvelope(t *testing.T) {
 		stop()
 	})
 
-	t.Run("Envelope success hook is not called when beforehook has error testing", func(t *testing.T) {
-		successMark := false
+	t.Run("Envelope success hook is not called when beforehook has error", func(t *testing.T) {
+		successHookMark := false
 
-		someEnvelope, err := req.NewEnvelope(
+		envelope, err := req.NewEnvelope(
 			req.WithId(1),
-			req.WithType("someEnvelope"),
+			req.WithType("envelope"),
 			req.WithScheduleModeInterval(0),
 			req.WithBeforeHook(func(ctx context.Context, envelope *req.Envelope) error {
 				return fmt.Errorf("error")
@@ -1298,7 +1338,7 @@ func TestSuccessHookOnOneTimeEnvelope(t *testing.T) {
 				return nil
 			}),
 			req.WithSuccessHook(func(ctx context.Context, envelope *req.Envelope) {
-				successMark = true
+				successHookMark = true
 			}),
 		)
 		assert.NoError(t, err)
@@ -1313,12 +1353,12 @@ func TestSuccessHookOnOneTimeEnvelope(t *testing.T) {
 
 		start := func() {
 			envelopeQueue.Start()
-			err = envelopeQueue.Send(someEnvelope)
+			err = envelopeQueue.Send(envelope)
 			assert.NoError(t, err)
 
 			select {
 			case <-time.After(1 * time.Second):
-				assert.Equal(t, false, successMark)
+				assert.Equal(t, false, successHookMark)
 			}
 		}
 		stop := func() {
@@ -1329,12 +1369,12 @@ func TestSuccessHookOnOneTimeEnvelope(t *testing.T) {
 		stop()
 	})
 
-	t.Run("Envelope success hook is not called when invoke has error testing", func(t *testing.T) {
-		successMark := false
+	t.Run("Envelope success hook is not called when invoke has error", func(t *testing.T) {
+		successHookMark := false
 
-		someEnvelope, err := req.NewEnvelope(
+		envelope, err := req.NewEnvelope(
 			req.WithId(1),
-			req.WithType("someEnvelope"),
+			req.WithType("envelope"),
 			req.WithScheduleModeInterval(0),
 			req.WithBeforeHook(func(ctx context.Context, envelope *req.Envelope) error {
 				return nil
@@ -1346,7 +1386,7 @@ func TestSuccessHookOnOneTimeEnvelope(t *testing.T) {
 				return nil
 			}),
 			req.WithSuccessHook(func(ctx context.Context, envelope *req.Envelope) {
-				successMark = true
+				successHookMark = true
 			}),
 		)
 		assert.NoError(t, err)
@@ -1361,12 +1401,12 @@ func TestSuccessHookOnOneTimeEnvelope(t *testing.T) {
 
 		start := func() {
 			envelopeQueue.Start()
-			err = envelopeQueue.Send(someEnvelope)
+			err = envelopeQueue.Send(envelope)
 			assert.NoError(t, err)
 
 			select {
 			case <-time.After(1 * time.Second):
-				assert.Equal(t, false, successMark)
+				assert.Equal(t, false, successHookMark)
 			}
 		}
 		stop := func() {
@@ -1377,12 +1417,12 @@ func TestSuccessHookOnOneTimeEnvelope(t *testing.T) {
 		stop()
 	})
 
-	t.Run("Envelope success hook ignores error in afterhook testing", func(t *testing.T) {
-		successMark := false
+	t.Run("Envelope success hook ignores error in afterhook", func(t *testing.T) {
+		successHookMark := false
 
-		someEnvelope, err := req.NewEnvelope(
+		envelope, err := req.NewEnvelope(
 			req.WithId(1),
-			req.WithType("someEnvelope"),
+			req.WithType("envelope"),
 			req.WithScheduleModeInterval(0),
 			req.WithBeforeHook(func(ctx context.Context, envelope *req.Envelope) error {
 				return nil
@@ -1394,7 +1434,7 @@ func TestSuccessHookOnOneTimeEnvelope(t *testing.T) {
 				return fmt.Errorf("error")
 			}),
 			req.WithSuccessHook(func(ctx context.Context, envelope *req.Envelope) {
-				successMark = true
+				successHookMark = true
 			}),
 		)
 		assert.NoError(t, err)
@@ -1409,12 +1449,12 @@ func TestSuccessHookOnOneTimeEnvelope(t *testing.T) {
 
 		start := func() {
 			envelopeQueue.Start()
-			err = envelopeQueue.Send(someEnvelope)
+			err = envelopeQueue.Send(envelope)
 			assert.NoError(t, err)
 
 			select {
 			case <-time.After(1 * time.Second):
-				assert.Equal(t, true, successMark)
+				assert.Equal(t, true, successHookMark)
 			}
 		}
 		stop := func() {

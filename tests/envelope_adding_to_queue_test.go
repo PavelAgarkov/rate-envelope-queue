@@ -11,7 +11,7 @@ import (
 
 func TestEnvelopeAddingToQueue(t *testing.T) {
 	suite := &TestSuite{}
-	suite.Setup(t)
+	suite.Setup(t, 10*time.Second)
 
 	t.Run("Single envelope adding to queue", func(t *testing.T) {
 		isCalledInInvokeBeforeStart := false
