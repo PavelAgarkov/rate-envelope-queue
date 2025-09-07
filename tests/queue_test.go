@@ -11,7 +11,7 @@ import (
 
 func TestQueue(t *testing.T) {
 	suite := &TestSuite{}
-	suite.Setup(t)
+	suite.Setup(t, 20*time.Second)
 
 	t.Run("Different start and stop queue options", func(t *testing.T) {
 		someEnvelope, err := req.NewEnvelope(

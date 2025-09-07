@@ -11,7 +11,7 @@ import (
 
 func TestEnvelope(t *testing.T) {
 	suite := &TestSuite{}
-	suite.Setup(t)
+	suite.Setup(t, 30*time.Second)
 
 	t.Run("Envelope base interface testing", func(t *testing.T) {
 		stamps := []req.Stamp{req.LoggingStamp()}
