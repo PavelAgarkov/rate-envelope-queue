@@ -13,6 +13,17 @@ func TestEnvelope(t *testing.T) {
 	suite := &TestSuite{}
 	suite.Setup(t, 30*time.Second)
 
+	// negative
+	t.Run("Envelope creation with empty invoke", func(t *testing.T) {
+		_, err := req.NewEnvelope(
+			req.WithId(1),
+			req.WithType("firstEnvelope"),
+			req.WithScheduleModeInterval(2*time.Second),
+			req.WithDeadline(1*time.Second),
+		)
+		assert.Error(t, err)
+	})
+
 	t.Run("Envelope base interface testing", func(t *testing.T) {
 		stamps := []req.Stamp{req.LoggingStamp()}
 

@@ -2,6 +2,8 @@ package tests
 
 import (
 	"context"
+	"fmt"
+	"sync"
 	"testing"
 	"time"
 
@@ -11,11 +13,11 @@ import (
 
 func TestEnvelopeAddingToQueue(t *testing.T) {
 	suite := &TestSuite{}
-	suite.Setup(t, 10*time.Second)
+	suite.Setup(t, 20*time.Second)
 
 	t.Run("Single envelope adding to queue", func(t *testing.T) {
 		isCalledInInvokeBeforeStart := false
-		someEnvelope, err := req.NewEnvelope(
+		envelope, err := req.NewEnvelope(
 			req.WithId(1),
 			req.WithType("envelope_1"),
 			req.WithInvoke(func(ctx context.Context, envelope *req.Envelope) error {
@@ -26,7 +28,7 @@ func TestEnvelopeAddingToQueue(t *testing.T) {
 		assert.NoError(t, err)
 
 		isCalledInInvokeAfterStart := false
-		someEnvelope2, err := req.NewEnvelope(
+		envelope2, err := req.NewEnvelope(
 			req.WithId(1),
 			req.WithType("envelope_2"),
 			req.WithInvoke(func(ctx context.Context, envelope *req.Envelope) error {
@@ -45,7 +47,7 @@ func TestEnvelopeAddingToQueue(t *testing.T) {
 		)
 
 		start := func() {
-			err = envelopeQueue.Send(someEnvelope2)
+			err = envelopeQueue.Send(envelope2)
 			assert.NoError(t, err)
 			envelopeQueue.Start()
 
@@ -57,7 +59,7 @@ func TestEnvelopeAddingToQueue(t *testing.T) {
 			envelopeQueue.Stop()
 
 			envelopeQueue.Start()
-			err = envelopeQueue.Send(someEnvelope)
+			err = envelopeQueue.Send(envelope)
 			assert.NoError(t, err)
 
 			select {
@@ -135,6 +137,8 @@ func TestEnvelopeAddingToQueue(t *testing.T) {
 		assert.Error(t, err)
 
 		invalidIntervalEnvelope, err := req.NewEnvelope(
+			req.WithId(2),
+			req.WithType("envelope_2"),
 			req.WithScheduleModeInterval(time.Duration(invalidInterval)),
 			req.WithDeadline(1*time.Second),
 			req.WithInvoke(func(ctx context.Context, envelope *req.Envelope) error {
@@ -144,8 +148,8 @@ func TestEnvelopeAddingToQueue(t *testing.T) {
 		assert.NoError(t, err)
 
 		invalidDeadlineEnvelope, err := req.NewEnvelope(
-			req.WithId(2),
-			req.WithType("envelope_2"),
+			req.WithId(3),
+			req.WithType("envelope_3"),
 			req.WithScheduleModeInterval(0),
 			req.WithDeadline(time.Duration(invalidDeadline)),
 			req.WithInvoke(func(ctx context.Context, envelope *req.Envelope) error {
@@ -153,6 +157,16 @@ func TestEnvelopeAddingToQueue(t *testing.T) {
 			}),
 		)
 		assert.NoError(t, err)
+
+		deadlineGreaterThanIntervalEnvelope, err := req.NewEnvelope(
+			req.WithId(4),
+			req.WithType("envelope_4"),
+			req.WithScheduleModeInterval(1*time.Second),
+			req.WithDeadline(3*time.Second),
+			req.WithInvoke(func(ctx context.Context, envelope *req.Envelope) error {
+				return nil
+			}),
+		)
 
 		envelopeQueue := req.NewRateEnvelopeQueue(
 			suite.ctx,
@@ -174,6 +188,9 @@ func TestEnvelopeAddingToQueue(t *testing.T) {
 			err = envelopeQueue.Send(invalidDeadlineEnvelope)
 			assert.ErrorIs(t, err, req.ErrAdditionEnvelopeToQueueBadFields)
 
+			err = envelopeQueue.Send(deadlineGreaterThanIntervalEnvelope)
+			assert.ErrorIs(t, err, req.ErrAdditionEnvelopeToQueueBadIntervals)
+
 		}
 		stop := func() {
 			envelopeQueue.Stop()
@@ -184,9 +201,9 @@ func TestEnvelopeAddingToQueue(t *testing.T) {
 	})
 
 	t.Run("Adding to queue with not running queue", func(t *testing.T) {
-		someEnvelope, err := req.NewEnvelope(
+		envelope, err := req.NewEnvelope(
 			req.WithId(1),
-			req.WithType("someEnvelope"),
+			req.WithType("envelope"),
 			req.WithInvoke(func(ctx context.Context, envelope *req.Envelope) error {
 				return nil
 			}),
@@ -205,8 +222,7 @@ func TestEnvelopeAddingToQueue(t *testing.T) {
 			envelopeQueue.Start()
 			envelopeQueue.Stop()
 
-			err = envelopeQueue.Send(someEnvelope)
-			assert.Error(t, err)
+			err = envelopeQueue.Send(envelope)
 			assert.ErrorIs(t, err, req.ErrEnvelopeQueueIsNotRunning)
 
 			envelopeQueue.Start()
@@ -220,14 +236,144 @@ func TestEnvelopeAddingToQueue(t *testing.T) {
 		stop()
 	})
 
-	// negative
-	t.Run("Envelope adding to queue with mismatch timeouts", func(t *testing.T) {
-		firstEnvelope, err := req.NewEnvelope(
+	t.Run("Adding to queue with not queue init and queue pending option", func(t *testing.T) {
+		invokeCallCh := make(chan struct{}, 3)
+
+		envelope, err := req.NewEnvelope(
 			req.WithId(1),
-			req.WithType("firstEnvelope"),
-			req.WithScheduleModeInterval(1*time.Second),
-			req.WithDeadline(3*time.Second),
+			req.WithType("envelope"),
 			req.WithInvoke(func(ctx context.Context, envelope *req.Envelope) error {
+				invokeCallCh <- struct{}{}
+				return nil
+			}),
+		)
+		assert.NoError(t, err)
+
+		envelopeQueue := req.NewRateEnvelopeQueue(
+			suite.ctx,
+			"queue",
+			req.WithLimitOption(1),
+			req.WithWaitingOption(true),
+			req.WithStopModeOption(req.Drain),
+		)
+
+		test := func() {
+			err = envelopeQueue.Send(envelope)
+			assert.NoError(t, err)
+
+			for i := 2; i < 4; i++ {
+				envelope_i, err := req.NewEnvelope(
+					req.WithId(uint64(i)),
+					req.WithType(fmt.Sprintf("envelope_%d", i)),
+					req.WithInvoke(func(ctx context.Context, envelope *req.Envelope) error {
+						invokeCallCh <- struct{}{}
+						return nil
+					}),
+				)
+				assert.NoError(t, err)
+
+				err = envelopeQueue.Send(envelope_i)
+				assert.NoError(t, err)
+			}
+
+			envelopeQueue.Start()
+
+			select {
+			case <-time.After(1 * time.Second):
+				close(invokeCallCh)
+			}
+
+			assert.Equal(t, 3, len(invokeCallCh))
+
+			envelopeQueue.Stop()
+		}
+
+		test()
+	})
+
+	t.Run("Adding to queue with queue stopping in another goroutine", func(t *testing.T) {
+		envelope, err := req.NewEnvelope(
+			req.WithId(1),
+			req.WithType("envelope"),
+			req.WithInvoke(func(ctx context.Context, envelope *req.Envelope) error {
+				return nil
+			}),
+		)
+		assert.NoError(t, err)
+
+		envelope2, err := req.NewEnvelope(
+			req.WithId(2),
+			req.WithType("envelope"),
+			req.WithInvoke(func(ctx context.Context, envelope *req.Envelope) error {
+				return nil
+			}),
+		)
+		assert.NoError(t, err)
+
+		envelopeQueue := req.NewRateEnvelopeQueue(
+			suite.ctx,
+			"queue",
+			req.WithLimitOption(1),
+			req.WithWaitingOption(true),
+			req.WithStopModeOption(req.Drain),
+		)
+
+		test := func() {
+			var mu sync.Mutex
+			cond := sync.NewCond(&mu)
+			var readyCount int
+
+			envelopeQueue.Start()
+
+			go func() {
+				mu.Lock()
+				readyCount++
+				cond.Broadcast()
+				cond.Wait()
+				mu.Unlock()
+
+				envelopeQueue.Stop()
+				err = envelopeQueue.Send(envelope)
+				assert.ErrorIs(t, err, req.ErrEnvelopeQueueIsNotRunning)
+			}()
+
+			go func() {
+				mu.Lock()
+				readyCount++
+				cond.Broadcast()
+				cond.Wait()
+				mu.Unlock()
+
+				time.Sleep(10 * time.Millisecond)
+				err = envelopeQueue.Send(envelope2)
+				assert.ErrorIs(t, err, req.ErrEnvelopeQueueIsNotRunning)
+			}()
+
+			mu.Lock()
+			for readyCount < 2 {
+				cond.Wait()
+			}
+
+			cond.Broadcast()
+			mu.Unlock()
+
+			time.Sleep(100 * time.Millisecond)
+		}
+
+		test()
+	})
+
+	t.Run("Adding to queue same envelope pointer multiple times", func(t *testing.T) {
+		var invokeCallCounter int
+
+		envelope, err := req.NewEnvelope(
+			req.WithId(1),
+			req.WithType("envelope"),
+			req.WithInvoke(func(ctx context.Context, envelope *req.Envelope) error {
+				select {
+				case <-time.After(1 * time.Second):
+					invokeCallCounter++
+				}
 				return nil
 			}),
 		)
@@ -243,25 +389,23 @@ func TestEnvelopeAddingToQueue(t *testing.T) {
 
 		start := func() {
 			envelopeQueue.Start()
-			err = envelopeQueue.Send(firstEnvelope)
-			assert.ErrorIs(t, req.ErrAdditionEnvelopeToQueueBadIntervals, err)
+
+			err = envelopeQueue.Send(envelope, envelope, envelope)
+			assert.NoError(t, err)
+			err = envelopeQueue.Send(envelope)
+			assert.NoError(t, err)
+
+			select {
+			case <-time.After(4 * time.Second):
+				assert.Equal(t, 1, invokeCallCounter)
+			}
 		}
+
 		stop := func() {
 			envelopeQueue.Stop()
 		}
 
 		start()
 		stop()
-	})
-
-	// negative
-	t.Run("Envelope creation with empty invoke", func(t *testing.T) {
-		_, err := req.NewEnvelope(
-			req.WithId(1),
-			req.WithType("firstEnvelope"),
-			req.WithScheduleModeInterval(2*time.Second),
-			req.WithDeadline(1*time.Second),
-		)
-		assert.Error(t, err)
 	})
 }
