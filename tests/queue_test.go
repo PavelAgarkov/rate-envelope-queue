@@ -2,10 +2,11 @@ package tests
 
 import (
 	"context"
-	req "github.com/PavelAgarkov/rate-envelope-queue"
-	"github.com/stretchr/testify/assert"
 	"testing"
 	"time"
+
+	req "github.com/PavelAgarkov/rate-envelope-queue"
+	"github.com/stretchr/testify/assert"
 )
 
 func TestQueue(t *testing.T) {
@@ -46,7 +47,8 @@ func TestQueue(t *testing.T) {
 			envelopeQueue.Stop()
 			envelopeQueue.Stop()
 			serr := envelopeQueue.Send(someEnvelope)
-			assert.NoError(t, serr)
+			assert.Error(t, serr)
+			assert.ErrorIs(t, serr, req.ErrEnvelopeQueueIsNotRunning)
 		}
 
 		test()

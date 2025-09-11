@@ -358,10 +358,12 @@ func (q *RateEnvelopeQueue) Send(envelopes ...*Envelope) error {
 	for {
 		s := q.currentState()
 		switch s {
-		case stateInit, stateStopped:
+		//case stateInit, stateStopped:
+		case stateInit:
 			q.pendingMu.Lock()
 			// повторная проверка состояния под локом
-			if q.currentState() == stateInit || q.currentState() == stateStopped {
+			//if q.currentState() == stateInit || q.currentState() == stateStopped {
+			if q.currentState() == stateInit {
 				// в init/stopped — буферизуем, если есть место
 				// (в stopped — на случай, если очередь остановлена и потом снова запущена)
 				// в stopped буфер не чистим, т.к. может быть повторный старт
@@ -406,6 +408,9 @@ func (q *RateEnvelopeQueue) Send(envelopes ...*Envelope) error {
 			}
 			q.lifecycleMu.Unlock()
 			return nil
+
+		case stateStopping, stateStopped:
+			return ErrEnvelopeQueueIsNotRunning
 
 		default:
 			return ErrEnvelopeQueueIsNotRunning

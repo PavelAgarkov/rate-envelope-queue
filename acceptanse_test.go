@@ -227,7 +227,7 @@ func Test_Acceptance(t *testing.T) {
 	stop()
 	err = envelopeQueue.Send(foodEnvelope)
 	if err != nil {
-		panic(err)
+		fmt.Println("add err after stop:", err)
 	}
 	start()
 
