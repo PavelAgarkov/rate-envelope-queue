@@ -21,6 +21,7 @@ const (
 	stateRunning                    // работает; Add() — сразу в workqueue
 	stateStopping                   // идёт останов; Add() — ошибка
 	stateStopped                    // остановлена; Add() — ошибка; возможен повторный Start()
+	stateTerminate
 )
 
 const (
@@ -30,7 +31,9 @@ const (
 
 type RateEnvelopeQueue struct {
 	name string
-	ctx  context.Context
+
+	ctx             context.Context
+	terminateCancel context.CancelFunc
 
 	limit         int
 	queueMu       sync.RWMutex
@@ -80,11 +83,13 @@ type RateEnvelopeQueue struct {
 // WithStopModeOption(Stop),
 // ----------------------------------------------------------------------------------
 func NewRateEnvelopeQueue(base context.Context, name string, options ...func(*RateEnvelopeQueue)) SingleQueuePool {
+	terminateCtx, cancel := context.WithCancel(base)
 	q := &RateEnvelopeQueue{
-		ctx:     base,
-		waiting: true,
-		state:   stateInit,
-		name:    name,
+		ctx:             terminateCtx,
+		terminateCancel: cancel,
+		waiting:         true,
+		state:           stateInit,
+		name:            name,
 	}
 	for _, o := range options {
 		o(q)
@@ -358,6 +363,8 @@ func (q *RateEnvelopeQueue) Send(envelopes ...*Envelope) error {
 	for {
 		s := q.currentState()
 		switch s {
+		case stateTerminate:
+			return ErrQueueIsTerminated
 		//case stateInit, stateStopped:
 		case stateInit:
 			q.pendingMu.Lock()
@@ -423,6 +430,9 @@ func (q *RateEnvelopeQueue) Start() {
 	defer q.lifecycleMu.Unlock()
 
 	switch q.currentState() {
+	case stateTerminate:
+		log.Printf(service + ": queue is terminated; Start skipped")
+		return
 	case stateRunning:
 		return
 	case stateStopping:
@@ -527,6 +537,18 @@ func (q *RateEnvelopeQueue) Stop() {
 	q.queueMu.Unlock()
 
 	log.Printf(service + ": queue is drained/stopped")
+}
+
+func (q *RateEnvelopeQueue) Terminate() {
+	q.lifecycleMu.Lock()
+	if q.currentState() == stateStopped {
+		q.lifecycleMu.Unlock()
+		q.setState(stateTerminate)
+		q.terminateCancel()
+		return
+	}
+	q.lifecycleMu.Unlock()
+	return
 }
 
 func (q *RateEnvelopeQueue) tryReserve(n uint64) bool {
