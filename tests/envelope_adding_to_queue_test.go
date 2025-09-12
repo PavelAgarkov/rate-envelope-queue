@@ -206,7 +206,8 @@ func TestEnvelopeAddingToQueue(t *testing.T) {
 			envelopeQueue.Stop()
 
 			err = envelopeQueue.Send(someEnvelope)
-			assert.NotErrorAs(t, err, req.ErrEnvelopeQueueIsNotRunning)
+			assert.Error(t, err)
+			assert.ErrorIs(t, err, req.ErrEnvelopeQueueIsNotRunning)
 
 			envelopeQueue.Start()
 		}

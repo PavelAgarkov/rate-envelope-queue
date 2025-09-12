@@ -14,23 +14,26 @@ import (
 )
 
 // внутренний автомат состояний
-type queueState int32
+type QueueState int32
 
 const (
-	stateInit     queueState = iota // создана, ещё не стартовала; Add() — буферизуется
-	stateRunning                    // работает; Add() — сразу в workqueue
-	stateStopping                   // идёт останов; Add() — ошибка
-	stateStopped                    // остановлена; Add() — ошибка; возможен повторный Start()
+	StateInit     QueueState = iota // создана, ещё не стартовала; Add() — буферизуется
+	StateRunning                    // работает; Add() — сразу в workqueue
+	StateStopping                   // идёт останов; Add() — ошибка
+	StateStopped                    // остановлена; Add() — ошибка; возможен повторный Start()
+	StateTerminate
 )
 
 const (
-	hardHookLimit = 800 * time.Millisecond
-	frac          = 0.5
+	hardHookLimit = 2000 * time.Millisecond
+	frac          = 0.9
 )
 
 type RateEnvelopeQueue struct {
 	name string
-	ctx  context.Context
+
+	terminateCtx    context.Context
+	terminateCancel context.CancelFunc
 
 	limit         int
 	queueMu       sync.RWMutex
@@ -43,13 +46,13 @@ type RateEnvelopeQueue struct {
 
 	stopMode StopMode
 
-	run   atomic.Bool // быстрый флаг «жива ли очередь» для воркеров при перепланировании
-	state queueState
+	run atomic.Bool // быстрый флаг «жива ли очередь» для воркеров при перепланировании
 
 	// защита старт/стоп/смена очереди/смена состояния
 	lifecycleMu sync.Mutex
 	// защита только чтения состояния
 	stateMu sync.RWMutex
+	state   QueueState
 
 	queueStamps []Stamp // глобальные stamps очереди
 
@@ -80,11 +83,13 @@ type RateEnvelopeQueue struct {
 // WithStopModeOption(Stop),
 // ----------------------------------------------------------------------------------
 func NewRateEnvelopeQueue(base context.Context, name string, options ...func(*RateEnvelopeQueue)) SingleQueuePool {
+	terminateCtx, cancel := context.WithCancel(base)
 	q := &RateEnvelopeQueue{
-		ctx:     base,
-		waiting: true,
-		state:   stateInit,
-		name:    name,
+		terminateCtx:    terminateCtx,
+		terminateCancel: cancel,
+		waiting:         true,
+		state:           StateInit,
+		name:            name,
 	}
 	for _, o := range options {
 		o(q)
@@ -144,14 +149,14 @@ func (q *RateEnvelopeQueue) buildInvokerChain(e *Envelope) Invoker {
 	return chain(base, append(q.queueStamps, e.stamps...)...)
 }
 
-func (q *RateEnvelopeQueue) currentState() queueState {
+func (q *RateEnvelopeQueue) CurrentState() QueueState {
 	q.stateMu.RLock()
 	s := q.state
 	q.stateMu.RUnlock()
 	return s
 }
 
-func (q *RateEnvelopeQueue) setState(s queueState) {
+func (q *RateEnvelopeQueue) setState(s QueueState) {
 	q.stateMu.Lock()
 	q.state = s
 	q.stateMu.Unlock()
@@ -237,19 +242,12 @@ func (q *RateEnvelopeQueue) worker(ctx context.Context) {
 				important = tctx.Err()
 			}
 
-			alive := q.run.Load() && q.ctx != nil && q.ctx.Err() == nil &&
-				q.currentState() == stateRunning && !queue.ShuttingDown()
-
 			switch {
-			// отмена/таймаут — забыть и, если периодическая и очередь жива, перепланировать
-			case errors.Is(important, context.Canceled) || errors.Is(important, context.DeadlineExceeded):
-				queue.Forget(envelope)
-
-				if envelope.interval > 0 && alive {
-					queue.AddAfter(envelope, envelope.interval)
-					q.inc(1)
-				}
-				return nil
+			// ветвь стала не актуальна т.к. перенесена в общий кейс important != nil
+			//т.к отмена контеста или дедлайн — это тоже ошибка выполнения задачи
+			// и пользователь может на неё реагировать в failureHook
+			//(например, если задача одиночная и нужно уведомить пользователя)
+			//case errors.Is(important, context.Canceled) || errors.Is(important, context.DeadlineExceeded):
 
 			// ErrStopEnvelope — забыть и не перепланировать. Ошибка от пользователя о том, что задача больше не нужна
 			case errors.Is(important, ErrStopEnvelope):
@@ -257,11 +255,13 @@ func (q *RateEnvelopeQueue) worker(ctx context.Context) {
 
 				return nil
 
-			// любая другая ошибка — перепланировать (если периодическая и очередь жива) и, если одиночная, вызвать failureHook (если есть) и реагировать
+			// любая ошибка(в том числе и errors.Is(important, context.DeadlineExceeded) || errors.Is(important, context.Canceled)) — перепланировать
+			//(если периодическая и очередь жива) и, если одиночная, вызвать failureHook (если есть) и реагировать
 			//на ответ пользователя через DestinationResult
 			case important != nil:
 				queue.Forget(envelope)
 
+				alive := q.isAlive(queue)
 				if envelope.interval > 0 && alive {
 					queue.AddAfter(envelope, envelope.interval)
 					q.inc(1)
@@ -287,6 +287,7 @@ func (q *RateEnvelopeQueue) worker(ctx context.Context) {
 						state = DecisionStateDrop
 					}
 
+					alive := q.isAlive(queue)
 					if alive {
 						switch state {
 						case DecisionStateRetryNow:
@@ -317,6 +318,8 @@ func (q *RateEnvelopeQueue) worker(ctx context.Context) {
 
 			default:
 				queue.Forget(envelope)
+
+				alive := q.isAlive(queue)
 				if envelope.interval > 0 && alive {
 					queue.AddAfter(envelope, envelope.interval)
 					q.inc(1)
@@ -336,6 +339,11 @@ func (q *RateEnvelopeQueue) worker(ctx context.Context) {
 	}
 }
 
+func (q *RateEnvelopeQueue) isAlive(queue workqueue.TypedRateLimitingInterface[*Envelope]) bool {
+	return q.run.Load() && q.terminateCtx != nil && q.terminateCtx.Err() == nil &&
+		q.CurrentState() == StateRunning && !queue.ShuttingDown()
+}
+
 func (q *RateEnvelopeQueue) Send(envelopes ...*Envelope) error {
 	// валидация содержимого (не состояния)
 	for _, e := range envelopes {
@@ -353,12 +361,16 @@ func (q *RateEnvelopeQueue) Send(envelopes ...*Envelope) error {
 	need := uint64(len(envelopes))
 
 	for {
-		s := q.currentState()
+		s := q.CurrentState()
 		switch s {
-		case stateInit, stateStopped:
+		case StateTerminate:
+			return ErrQueueIsTerminated
+		//case StateInit, stateStopped:
+		case StateInit:
 			q.pendingMu.Lock()
 			// повторная проверка состояния под локом
-			if q.currentState() == stateInit || q.currentState() == stateStopped {
+			//if q.currentState() == StateInit || q.currentState() == stateStopped {
+			if q.CurrentState() == StateInit {
 				// в init/stopped — буферизуем, если есть место
 				// (в stopped — на случай, если очередь остановлена и потом снова запущена)
 				// в stopped буфер не чистим, т.к. может быть повторный старт
@@ -375,14 +387,14 @@ func (q *RateEnvelopeQueue) Send(envelopes ...*Envelope) error {
 			// состояние сменилось — пробуем снова по новому пути
 			continue
 
-		case stateRunning:
+		case StateRunning:
 			if !q.tryReserve(need) {
 				return ErrAllowedQueueCapacityExceeded
 			}
 
 			q.lifecycleMu.Lock()
 			// повторная проверка под той же блокировкой, что и Stop/Start
-			if q.currentState() != stateRunning {
+			if q.CurrentState() != StateRunning {
 				q.lifecycleMu.Unlock()
 				q.unreserve(need)
 				return ErrEnvelopeQueueIsNotRunning
@@ -404,6 +416,9 @@ func (q *RateEnvelopeQueue) Send(envelopes ...*Envelope) error {
 			q.lifecycleMu.Unlock()
 			return nil
 
+		case StateStopping, StateStopped:
+			return ErrEnvelopeQueueIsNotRunning
+
 		default:
 			return ErrEnvelopeQueueIsNotRunning
 		}
@@ -414,10 +429,13 @@ func (q *RateEnvelopeQueue) Start() {
 	q.lifecycleMu.Lock()
 	defer q.lifecycleMu.Unlock()
 
-	switch q.currentState() {
-	case stateRunning:
+	switch q.CurrentState() {
+	case StateTerminate:
+		log.Printf(service + ": queue is terminated; Start skipped")
 		return
-	case stateStopping:
+	case StateRunning:
+		return
+	case StateStopping:
 		log.Printf(service + ": queue is stopping; Start skipped")
 		return
 	}
@@ -436,7 +454,7 @@ func (q *RateEnvelopeQueue) Start() {
 	q.queueMu.Unlock()
 
 	// переключаем состояние и run-флаг
-	q.setState(stateRunning)
+	q.setState(StateRunning)
 	q.run.Store(true)
 
 	// запустить воркеры
@@ -446,7 +464,7 @@ func (q *RateEnvelopeQueue) Start() {
 		}
 		go func() {
 			defer recoverWrap()
-			q.worker(q.ctx)
+			q.worker(q.terminateCtx)
 		}()
 	}
 
@@ -467,11 +485,11 @@ func (q *RateEnvelopeQueue) Start() {
 func (q *RateEnvelopeQueue) Stop() {
 	// Переводим состояние в stopping (под "зонтиком"), без долгих операций под локом.
 	q.lifecycleMu.Lock()
-	if q.currentState() != stateRunning {
+	if q.CurrentState() != StateRunning {
 		q.lifecycleMu.Unlock()
 		return
 	}
-	q.setState(stateStopping)
+	q.setState(StateStopping)
 	q.run.Store(false)
 	q.lifecycleMu.Unlock()
 
@@ -511,7 +529,7 @@ func (q *RateEnvelopeQueue) Stop() {
 
 	// Финализируем состояние и публикуем отсутствие очереди.
 	q.lifecycleMu.Lock()
-	q.setState(stateStopped)
+	q.setState(StateStopped)
 	q.lifecycleMu.Unlock()
 
 	q.queueMu.Lock()
@@ -519,6 +537,18 @@ func (q *RateEnvelopeQueue) Stop() {
 	q.queueMu.Unlock()
 
 	log.Printf(service + ": queue is drained/stopped")
+}
+
+func (q *RateEnvelopeQueue) Terminate() {
+	q.lifecycleMu.Lock()
+	if q.CurrentState() == StateStopped {
+		q.lifecycleMu.Unlock()
+		q.setState(StateTerminate)
+		q.terminateCancel()
+		return
+	}
+	q.lifecycleMu.Unlock()
+	return
 }
 
 func (q *RateEnvelopeQueue) tryReserve(n uint64) bool {
