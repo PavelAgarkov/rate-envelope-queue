@@ -34,5 +34,6 @@ type (
 		Start()
 		Stop()
 		Terminate()
+		CurrentState() QueueState
 	}
 )

@@ -14,14 +14,14 @@ import (
 )
 
 // внутренний автомат состояний
-type queueState int32
+type QueueState int32
 
 const (
-	stateInit     queueState = iota // создана, ещё не стартовала; Add() — буферизуется
-	stateRunning                    // работает; Add() — сразу в workqueue
-	stateStopping                   // идёт останов; Add() — ошибка
-	stateStopped                    // остановлена; Add() — ошибка; возможен повторный Start()
-	stateTerminate
+	StateInit     QueueState = iota // создана, ещё не стартовала; Add() — буферизуется
+	StateRunning                    // работает; Add() — сразу в workqueue
+	StateStopping                   // идёт останов; Add() — ошибка
+	StateStopped                    // остановлена; Add() — ошибка; возможен повторный Start()
+	StateTerminate
 )
 
 const (
@@ -52,7 +52,7 @@ type RateEnvelopeQueue struct {
 	lifecycleMu sync.Mutex
 	// защита только чтения состояния
 	stateMu sync.RWMutex
-	state   queueState
+	state   QueueState
 
 	queueStamps []Stamp // глобальные stamps очереди
 
@@ -88,7 +88,7 @@ func NewRateEnvelopeQueue(base context.Context, name string, options ...func(*Ra
 		terminateCtx:    terminateCtx,
 		terminateCancel: cancel,
 		waiting:         true,
-		state:           stateInit,
+		state:           StateInit,
 		name:            name,
 	}
 	for _, o := range options {
@@ -149,14 +149,14 @@ func (q *RateEnvelopeQueue) buildInvokerChain(e *Envelope) Invoker {
 	return chain(base, append(q.queueStamps, e.stamps...)...)
 }
 
-func (q *RateEnvelopeQueue) currentState() queueState {
+func (q *RateEnvelopeQueue) CurrentState() QueueState {
 	q.stateMu.RLock()
 	s := q.state
 	q.stateMu.RUnlock()
 	return s
 }
 
-func (q *RateEnvelopeQueue) setState(s queueState) {
+func (q *RateEnvelopeQueue) setState(s QueueState) {
 	q.stateMu.Lock()
 	q.state = s
 	q.stateMu.Unlock()
@@ -341,7 +341,7 @@ func (q *RateEnvelopeQueue) worker(ctx context.Context) {
 
 func (q *RateEnvelopeQueue) isAlive(queue workqueue.TypedRateLimitingInterface[*Envelope]) bool {
 	return q.run.Load() && q.terminateCtx != nil && q.terminateCtx.Err() == nil &&
-		q.currentState() == stateRunning && !queue.ShuttingDown()
+		q.CurrentState() == StateRunning && !queue.ShuttingDown()
 }
 
 func (q *RateEnvelopeQueue) Send(envelopes ...*Envelope) error {
@@ -361,16 +361,16 @@ func (q *RateEnvelopeQueue) Send(envelopes ...*Envelope) error {
 	need := uint64(len(envelopes))
 
 	for {
-		s := q.currentState()
+		s := q.CurrentState()
 		switch s {
-		case stateTerminate:
+		case StateTerminate:
 			return ErrQueueIsTerminated
-		//case stateInit, stateStopped:
-		case stateInit:
+		//case StateInit, stateStopped:
+		case StateInit:
 			q.pendingMu.Lock()
 			// повторная проверка состояния под локом
-			//if q.currentState() == stateInit || q.currentState() == stateStopped {
-			if q.currentState() == stateInit {
+			//if q.currentState() == StateInit || q.currentState() == stateStopped {
+			if q.CurrentState() == StateInit {
 				// в init/stopped — буферизуем, если есть место
 				// (в stopped — на случай, если очередь остановлена и потом снова запущена)
 				// в stopped буфер не чистим, т.к. может быть повторный старт
@@ -387,14 +387,14 @@ func (q *RateEnvelopeQueue) Send(envelopes ...*Envelope) error {
 			// состояние сменилось — пробуем снова по новому пути
 			continue
 
-		case stateRunning:
+		case StateRunning:
 			if !q.tryReserve(need) {
 				return ErrAllowedQueueCapacityExceeded
 			}
 
 			q.lifecycleMu.Lock()
 			// повторная проверка под той же блокировкой, что и Stop/Start
-			if q.currentState() != stateRunning {
+			if q.CurrentState() != StateRunning {
 				q.lifecycleMu.Unlock()
 				q.unreserve(need)
 				return ErrEnvelopeQueueIsNotRunning
@@ -416,7 +416,7 @@ func (q *RateEnvelopeQueue) Send(envelopes ...*Envelope) error {
 			q.lifecycleMu.Unlock()
 			return nil
 
-		case stateStopping, stateStopped:
+		case StateStopping, StateStopped:
 			return ErrEnvelopeQueueIsNotRunning
 
 		default:
@@ -429,13 +429,13 @@ func (q *RateEnvelopeQueue) Start() {
 	q.lifecycleMu.Lock()
 	defer q.lifecycleMu.Unlock()
 
-	switch q.currentState() {
-	case stateTerminate:
+	switch q.CurrentState() {
+	case StateTerminate:
 		log.Printf(service + ": queue is terminated; Start skipped")
 		return
-	case stateRunning:
+	case StateRunning:
 		return
-	case stateStopping:
+	case StateStopping:
 		log.Printf(service + ": queue is stopping; Start skipped")
 		return
 	}
@@ -454,7 +454,7 @@ func (q *RateEnvelopeQueue) Start() {
 	q.queueMu.Unlock()
 
 	// переключаем состояние и run-флаг
-	q.setState(stateRunning)
+	q.setState(StateRunning)
 	q.run.Store(true)
 
 	// запустить воркеры
@@ -485,11 +485,11 @@ func (q *RateEnvelopeQueue) Start() {
 func (q *RateEnvelopeQueue) Stop() {
 	// Переводим состояние в stopping (под "зонтиком"), без долгих операций под локом.
 	q.lifecycleMu.Lock()
-	if q.currentState() != stateRunning {
+	if q.CurrentState() != StateRunning {
 		q.lifecycleMu.Unlock()
 		return
 	}
-	q.setState(stateStopping)
+	q.setState(StateStopping)
 	q.run.Store(false)
 	q.lifecycleMu.Unlock()
 
@@ -529,7 +529,7 @@ func (q *RateEnvelopeQueue) Stop() {
 
 	// Финализируем состояние и публикуем отсутствие очереди.
 	q.lifecycleMu.Lock()
-	q.setState(stateStopped)
+	q.setState(StateStopped)
 	q.lifecycleMu.Unlock()
 
 	q.queueMu.Lock()
@@ -541,9 +541,9 @@ func (q *RateEnvelopeQueue) Stop() {
 
 func (q *RateEnvelopeQueue) Terminate() {
 	q.lifecycleMu.Lock()
-	if q.currentState() == stateStopped {
+	if q.CurrentState() == StateStopped {
 		q.lifecycleMu.Unlock()
-		q.setState(stateTerminate)
+		q.setState(StateTerminate)
 		q.terminateCancel()
 		return
 	}
