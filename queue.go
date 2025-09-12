@@ -32,7 +32,7 @@ const (
 type RateEnvelopeQueue struct {
 	name string
 
-	ctx             context.Context
+	terminateCtx    context.Context
 	terminateCancel context.CancelFunc
 
 	limit         int
@@ -46,13 +46,13 @@ type RateEnvelopeQueue struct {
 
 	stopMode StopMode
 
-	run   atomic.Bool // быстрый флаг «жива ли очередь» для воркеров при перепланировании
-	state queueState
+	run atomic.Bool // быстрый флаг «жива ли очередь» для воркеров при перепланировании
 
 	// защита старт/стоп/смена очереди/смена состояния
 	lifecycleMu sync.Mutex
 	// защита только чтения состояния
 	stateMu sync.RWMutex
+	state   queueState
 
 	queueStamps []Stamp // глобальные stamps очереди
 
@@ -85,7 +85,7 @@ type RateEnvelopeQueue struct {
 func NewRateEnvelopeQueue(base context.Context, name string, options ...func(*RateEnvelopeQueue)) SingleQueuePool {
 	terminateCtx, cancel := context.WithCancel(base)
 	q := &RateEnvelopeQueue{
-		ctx:             terminateCtx,
+		terminateCtx:    terminateCtx,
 		terminateCancel: cancel,
 		waiting:         true,
 		state:           stateInit,
@@ -340,7 +340,7 @@ func (q *RateEnvelopeQueue) worker(ctx context.Context) {
 }
 
 func (q *RateEnvelopeQueue) isAlive(queue workqueue.TypedRateLimitingInterface[*Envelope]) bool {
-	return q.run.Load() && q.ctx != nil && q.ctx.Err() == nil &&
+	return q.run.Load() && q.terminateCtx != nil && q.terminateCtx.Err() == nil &&
 		q.currentState() == stateRunning && !queue.ShuttingDown()
 }
 
@@ -464,7 +464,7 @@ func (q *RateEnvelopeQueue) Start() {
 		}
 		go func() {
 			defer recoverWrap()
-			q.worker(q.ctx)
+			q.worker(q.terminateCtx)
 		}()
 	}
 
