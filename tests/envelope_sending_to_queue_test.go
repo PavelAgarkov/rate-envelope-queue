@@ -218,22 +218,15 @@ func TestEnvelopeAddingToQueue(t *testing.T) {
 			req.WithStopModeOption(req.Drain),
 		)
 
-		start := func() {
+		test := func() {
 			envelopeQueue.Start()
 			envelopeQueue.Stop()
 
 			err = envelopeQueue.Send(envelope)
 			assert.ErrorIs(t, err, req.ErrEnvelopeQueueIsNotRunning)
-
-			envelopeQueue.Start()
 		}
 
-		stop := func() {
-			envelopeQueue.Stop()
-		}
-
-		start()
-		stop()
+		test()
 	})
 
 	t.Run("Adding to queue with not queue init and queue pending option", func(t *testing.T) {
@@ -407,5 +400,35 @@ func TestEnvelopeAddingToQueue(t *testing.T) {
 
 		start()
 		stop()
+	})
+
+	t.Run("Adding to queue with stopped queue after terminate option", func(t *testing.T) {
+		envelope, err := req.NewEnvelope(
+			req.WithId(1),
+			req.WithType("envelope"),
+			req.WithInvoke(func(ctx context.Context, envelope *req.Envelope) error {
+				return nil
+			}),
+		)
+		assert.NoError(t, err)
+
+		envelopeQueue := req.NewRateEnvelopeQueue(
+			suite.ctx,
+			"queue",
+			req.WithLimitOption(1),
+			req.WithWaitingOption(true),
+			req.WithStopModeOption(req.Drain),
+		)
+
+		test := func() {
+			envelopeQueue.Start()
+			envelopeQueue.Stop()
+			envelopeQueue.Terminate()
+
+			err = envelopeQueue.Send(envelope)
+			assert.ErrorIs(t, err, req.ErrQueueIsTerminated)
+		}
+
+		test()
 	})
 }
