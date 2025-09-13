@@ -11,7 +11,7 @@ type TestSuite struct {
 	cancel context.CancelFunc
 }
 
-func (ts *TestSuite) Setup(t *testing.T) {
-	ts.ctx, ts.cancel = context.WithTimeout(context.Background(), 1*time.Minute)
+func (ts *TestSuite) Setup(t *testing.T, testTimeout time.Duration) {
+	ts.ctx, ts.cancel = context.WithTimeout(context.Background(), testTimeout)
 	t.Cleanup(ts.cancel)
 }
