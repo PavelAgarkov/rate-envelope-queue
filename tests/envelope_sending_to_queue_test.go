@@ -427,6 +427,56 @@ func TestEnvelopeAddingToQueue(t *testing.T) {
 
 			err = envelopeQueue.Send(envelope)
 			assert.ErrorIs(t, err, req.ErrQueueIsTerminated)
+
+			assert.Equal(t, req.QueueState(4), envelopeQueue.CurrentState())
+		}
+
+		test()
+	})
+
+	t.Run("Adding to queue with stopped queue and start with terminate option", func(t *testing.T) {
+		invokeCallCh := make(chan struct{}, 3)
+
+		envelope, err := req.NewEnvelope(
+			req.WithId(1),
+			req.WithType("envelope"),
+			req.WithScheduleModeInterval(1*time.Second),
+			req.WithInvoke(func(ctx context.Context, envelope *req.Envelope) error {
+				invokeCallCh <- struct{}{}
+				return nil
+			}),
+		)
+		assert.NoError(t, err)
+
+		envelopeQueue := req.NewRateEnvelopeQueue(
+			suite.ctx,
+			"queue",
+			req.WithLimitOption(1),
+			req.WithWaitingOption(true),
+			req.WithStopModeOption(req.Drain),
+		)
+
+		test := func() {
+			err = envelopeQueue.Send(envelope)
+			assert.NoError(t, err)
+
+			envelopeQueue.Start()
+
+			select {
+			case <-time.After(500 * time.Millisecond):
+				assert.Equal(t, 1, len(invokeCallCh))
+			}
+
+			envelopeQueue.Stop()
+			envelopeQueue.Terminate()
+
+			envelopeQueue.Start()
+			assert.Equal(t, req.QueueState(4), envelopeQueue.CurrentState())
+
+			select {
+			case <-time.After(1*time.Second + 500*time.Millisecond):
+				assert.Equal(t, 1, len(invokeCallCh))
+			}
 		}
 
 		test()

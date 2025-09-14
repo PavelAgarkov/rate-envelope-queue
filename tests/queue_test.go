@@ -308,6 +308,7 @@ func TestQueue(t *testing.T) {
 			select {
 			case <-time.After(500 * time.Millisecond):
 				envelopeQueue.Stop()
+				envelopeQueue.Terminate()
 			}
 
 			select {
@@ -365,6 +366,7 @@ func TestQueue(t *testing.T) {
 			select {
 			case <-time.After(500 * time.Millisecond):
 				envelopeQueue.Stop()
+				envelopeQueue.Terminate()
 			}
 
 			select {
