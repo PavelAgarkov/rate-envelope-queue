@@ -1087,7 +1087,7 @@ func TestFailureHookDecisionsOnOneTimeEnvelope(t *testing.T) {
 				return nil
 			}),
 			req.WithFailureHook(func(ctx context.Context, envelope *req.Envelope, err error) req.Decision {
-				return req.RetryOnceAfterDecision(0) // default = 30s
+				return req.RetryOnceAfterDecision(0) // default = 1s
 			}),
 			req.WithSuccessHook(func(ctx context.Context, envelope *req.Envelope) {
 				successHookMark = true
@@ -1110,21 +1110,21 @@ func TestFailureHookDecisionsOnOneTimeEnvelope(t *testing.T) {
 
 			// первый вызов invoke
 			select {
-			case <-time.After(500 * time.Millisecond):
+			case <-time.After(100 * time.Millisecond):
 				assert.Equal(t, 0, len(successHookCycleCall))
 				assert.Equal(t, false, successHookMark)
 			}
 
 			// invoke отложен с дедлайном в WithFailureHook, isCalledInRetryCount тот же
 			select {
-			case <-time.After(500 * time.Millisecond):
+			case <-time.After(100 * time.Millisecond):
 				assert.Equal(t, 0, len(successHookCycleCall))
 				assert.Equal(t, false, successHookMark)
 			}
 
 			// дедлайн из WithFailureHook прошел, новый вызов invoke
 			select {
-			case <-time.After(30 * time.Second):
+			case <-time.After(900 * time.Millisecond):
 				assert.Equal(t, []int{successCycleCall}, successHookCycleCall)
 				assert.Equal(t, true, successHookMark)
 			}
