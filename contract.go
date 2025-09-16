@@ -8,7 +8,8 @@ import (
 
 var (
 	ErrStopEnvelope                        = errors.New(fmt.Sprintf("%s: stop envelope", service))
-	ErrEnvelopeQueueIsNotRunning           = errors.New(fmt.Sprintf("%s: queue is not running", service))
+	ErrEnvelopeQueueIsNotRunning           = errors.New(fmt.Sprintf("%s: regect envelope, queue is not running or init", service))
+	ErrQueueIsTerminated                   = errors.New(fmt.Sprintf("%s: regect envelope, queue is terminated", service))
 	ErrAdditionEnvelopeToQueueBadFields    = errors.New(fmt.Sprintf("%s: addition envelope to queue has bad fields", service))
 	ErrAdditionEnvelopeToQueueBadIntervals = errors.New(fmt.Sprintf("%s: addition envelope to queue has bad intervals", service))
 	ErrAllowedQueueCapacityExceeded        = errors.New(fmt.Sprintf("%s: allowed queue capacity exceeded", service))
@@ -32,5 +33,7 @@ type (
 		Send(envelopes ...*Envelope) error
 		Start()
 		Stop()
+		Terminate()
+		CurrentState() QueueState
 	}
 )

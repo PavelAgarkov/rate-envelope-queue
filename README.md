@@ -482,7 +482,6 @@ envelopeQueue := NewRateEnvelopeQueue(
 ctx, cancel := context.WithCancel(context.Background())
 defer cancel()
 
-// тут будут другие примеры
 q := NewRateEnvelopeQueue(
     ctx,
     "emails",
