@@ -3,7 +3,7 @@ package tests
 import (
 	"context"
 	"fmt"
-	req "github.com/PavelAgarkov/rate-envelope-queue"
+	req "github.com/simplegear/rate-envelope-queue"
 	"github.com/stretchr/testify/assert"
 	"testing"
 	"time"

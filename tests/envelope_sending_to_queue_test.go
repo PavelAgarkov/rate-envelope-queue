@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	req "github.com/PavelAgarkov/rate-envelope-queue"
+	req "github.com/simplegear/rate-envelope-queue"
 	"github.com/stretchr/testify/assert"
 )
 

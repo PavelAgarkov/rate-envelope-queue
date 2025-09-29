@@ -1,4 +1,4 @@
-module github.com/PavelAgarkov/rate-envelope-queue
+module github.com/simplegear/rate-envelope-queue
 
 go 1.24.0
 
