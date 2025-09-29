@@ -8,7 +8,7 @@ import (
 	"syscall"
 	"time"
 
-	req "github.com/PavelAgarkov/rate-envelope-queue"
+	req "github.com/simplegear/rate-envelope-queue"
 )
 
 func main() {
