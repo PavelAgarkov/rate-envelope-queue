@@ -35,6 +35,9 @@ type RateEnvelopeQueue struct {
 	terminateCtx    context.Context
 	terminateCancel context.CancelFunc
 
+	runCtx    context.Context
+	runCancel context.CancelFunc
+
 	limit         int
 	queueMu       sync.RWMutex
 	queue         workqueue.TypedRateLimitingInterface[*Envelope]
@@ -340,7 +343,7 @@ func (q *RateEnvelopeQueue) worker(ctx context.Context) {
 }
 
 func (q *RateEnvelopeQueue) isAlive(queue workqueue.TypedRateLimitingInterface[*Envelope]) bool {
-	return q.run.Load() && q.terminateCtx != nil && q.terminateCtx.Err() == nil &&
+	return q.run.Load() && q.runCtx != nil && q.runCtx.Err() == nil &&
 		q.CurrentState() == StateRunning && !queue.ShuttingDown()
 }
 
@@ -457,6 +460,8 @@ func (q *RateEnvelopeQueue) Start() {
 	q.setState(StateRunning)
 	q.run.Store(true)
 
+	q.runCtx, q.runCancel = context.WithCancel(q.terminateCtx)
+
 	// запустить воркеры
 	for i := 0; i < q.limit; i++ {
 		if q.waiting {
@@ -464,7 +469,7 @@ func (q *RateEnvelopeQueue) Start() {
 		}
 		go func() {
 			defer recoverWrap()
-			q.worker(q.terminateCtx)
+			q.worker(q.runCtx)
 		}()
 	}
 
@@ -491,7 +496,13 @@ func (q *RateEnvelopeQueue) Stop() {
 	}
 	q.setState(StateStopping)
 	q.run.Store(false)
+	runCancel := q.runCancel
+
 	q.lifecycleMu.Unlock()
+
+	if runCancel != nil {
+		runCancel()
+	}
 
 	// Снимок ссылки на очередь (не обнуляем публикацию до финализации).
 	q.queueMu.RLock()
@@ -536,6 +547,9 @@ func (q *RateEnvelopeQueue) Stop() {
 	q.queue = nil
 	q.queueMu.Unlock()
 
+	q.runCtx = nil
+	q.runCancel = nil
+
 	log.Printf(service + ": queue is drained/stopped")
 }
 
@@ -543,11 +557,16 @@ func (q *RateEnvelopeQueue) Terminate() {
 	q.lifecycleMu.Lock()
 	if q.CurrentState() == StateStopped {
 		q.lifecycleMu.Unlock()
-		q.setState(StateTerminate)
-		q.terminateCancel()
 		return
 	}
+	q.setState(StateTerminate)
+	termCancel := q.terminateCancel
 	q.lifecycleMu.Unlock()
+
+	if termCancel != nil {
+		termCancel()
+	}
+
 	return
 }
 
