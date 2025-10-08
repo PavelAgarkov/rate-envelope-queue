@@ -469,7 +469,7 @@ func (q *RateEnvelopeQueue) Start() {
 		}
 		go func() {
 			defer recoverWrap()
-			q.worker(q.terminateCtx)
+			q.worker(q.runCtx)
 		}()
 	}
 
@@ -547,6 +547,9 @@ func (q *RateEnvelopeQueue) Stop() {
 	q.queue = nil
 	q.queueMu.Unlock()
 
+	q.runCtx = nil
+	q.runCancel = nil
+
 	log.Printf(service + ": queue is drained/stopped")
 }
 
@@ -554,11 +557,16 @@ func (q *RateEnvelopeQueue) Terminate() {
 	q.lifecycleMu.Lock()
 	if q.CurrentState() == StateStopped {
 		q.lifecycleMu.Unlock()
-		q.setState(StateTerminate)
-		q.terminateCancel()
 		return
 	}
+	q.setState(StateTerminate)
+	termCancel := q.terminateCancel
 	q.lifecycleMu.Unlock()
+
+	if termCancel != nil {
+		termCancel()
+	}
+
 	return
 }
 
